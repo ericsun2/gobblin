@@ -1,0 +1,35 @@
+job.name=Zuora_Lynda_Account
+job.description=Job to pull data from Lynda-Account table from Zuora
+
+extract.namespace=Zuora_Lynda
+extract.delta.fields=UpdatedDate
+extract.primary.key.fields=ID
+extract.table.type=snapshot_append
+
+source.querybased.query=select Id, Name, UpdatedDate, CreatedDate from Account limit 100;
+source.schema=[{"columnName":"ID","comment":"","isNullable":"false","dataType":{"type":"string"}},{"columnName":"Name","comment":"","isNullable":"true","dataType":{"type":"string"}},{"columnName":"CreatedDate","comment":"","isNullable":"true","dataType":{"type":"timestamp"}},{"columnName":"UpdatedDate","comment":"","isNullable":"true","dataType":{"type":"timestamp"}}]
+#source.querybased.schema=Zuora_Lynda
+source.entity=Account
+
+source.querybased.extract.type=snapshot
+source.querybased.watermark.type=timestamp
+source.max.number.of.partitions=1
+zuora.row.limit=10
+
+#full dump
+#extract.table.type=snapshot_only
+#source.querybased.extract.type=snapshot
+#extract.is.full=true
+
+#incremental
+#extract.table.type=snapshot_append
+#source.querybased.extract.type=snapshot
+
+#append
+#extract.table.type=append_only
+#source.querybased.extract.type=append
+
+#source.querybased.start.value=20150413000000
+#source.querybased.end.value=20170414000000
+#source.querybased.is.watermark.override=true
+#source.querybased.low.watermark.backup.secs=600
