@@ -42,8 +42,7 @@ import gobblin.source.extractor.watermark.Predicate;
 import gobblin.source.workunit.WorkUnit;
 
 
-public abstract class BasicRestApiExtractor extends QueryBasedExtractor<JsonArray, JsonElement> implements
-    SourceSpecificLayer<JsonArray, JsonElement>, RestApiSpecificLayer {
+public abstract class BasicRestApiExtractor extends QueryBasedExtractor<JsonArray, JsonElement> implements SourceSpecificLayer<JsonArray, JsonElement>, RestApiSpecificLayer {
   private Logger log = LoggerFactory.getLogger(BasicRestApiExtractor.class);
   private HttpsURLConnection connection = null;
   protected static final Gson gson = new Gson();
@@ -81,7 +80,8 @@ public abstract class BasicRestApiExtractor extends QueryBasedExtractor<JsonArra
   }
 
   @Override
-  public void extractMetadata(String schema, String entity, WorkUnit workUnit) throws SchemaException, IOException {
+  public void extractMetadata(String schema, String entity, WorkUnit workUnit)
+      throws SchemaException, IOException {
     // TODO Auto-generated method stub
     this.log.info("Extract Metadata using REST Api");
     JsonArray columnArray = new JsonArray();
@@ -101,19 +101,20 @@ public abstract class BasicRestApiExtractor extends QueryBasedExtractor<JsonArra
           Schema obj = gson.fromJson(columnElement, Schema.class);
           String columnName = obj.getColumnName();
 
-          obj.setWaterMark(this.isWatermarkColumn(workUnit.getProp(ConfigurationKeys.EXTRACT_DELTA_FIELDS_KEY),
-              columnName));
+          obj.setWaterMark(
+              this.isWatermarkColumn(workUnit.getProp(ConfigurationKeys.EXTRACT_DELTA_FIELDS_KEY), columnName));
 
           if (this.isWatermarkColumn(workUnit.getProp(ConfigurationKeys.EXTRACT_DELTA_FIELDS_KEY), columnName)) {
             obj.setNullable(false);
-          } else if (this.getPrimarykeyIndex(workUnit.getProp(ConfigurationKeys.EXTRACT_PRIMARY_KEY_FIELDS_KEY),
-              columnName) == 0) {
+          } else if (
+              this.getPrimarykeyIndex(workUnit.getProp(ConfigurationKeys.EXTRACT_PRIMARY_KEY_FIELDS_KEY), columnName)
+                  == 0) {
             // set all columns as nullable except primary key and watermark columns
             obj.setNullable(true);
           }
 
-          obj.setPrimaryKey(this.getPrimarykeyIndex(workUnit.getProp(ConfigurationKeys.EXTRACT_PRIMARY_KEY_FIELDS_KEY),
-              columnName));
+          obj.setPrimaryKey(
+              this.getPrimarykeyIndex(workUnit.getProp(ConfigurationKeys.EXTRACT_PRIMARY_KEY_FIELDS_KEY), columnName));
 
           String jsonStr = gson.toJson(obj);
           JsonObject jsonObject = gson.fromJson(jsonStr, JsonObject.class).getAsJsonObject();
@@ -123,7 +124,6 @@ public abstract class BasicRestApiExtractor extends QueryBasedExtractor<JsonArra
 
       this.log.info("Schema:" + columnArray);
       this.setOutputSchema(columnArray);
-
     } catch (Exception e) {
       throw new SchemaException("Failed to get schema using rest api; error - " + e.getMessage(), e);
     }
@@ -131,7 +131,8 @@ public abstract class BasicRestApiExtractor extends QueryBasedExtractor<JsonArra
 
   @Override
   public long getMaxWatermark(String schema, String entity, String watermarkColumn,
-      List<Predicate> snapshotPredicateList, String watermarkSourceFormat) throws HighWatermarkException {
+      List<Predicate> snapshotPredicateList, String watermarkSourceFormat)
+      throws HighWatermarkException {
     this.log.debug("Get high watermark using Rest Api");
     long CalculatedHighWatermark = -1;
     try {
@@ -168,7 +169,8 @@ public abstract class BasicRestApiExtractor extends QueryBasedExtractor<JsonArra
 
   @Override
   public Iterator<JsonElement> getRecordSet(String schema, String entity, WorkUnit workUnit,
-      List<Predicate> predicateList) throws DataRecordException, IOException {
+      List<Predicate> predicateList)
+      throws DataRecordException, IOException {
     //    this.log.info("Get data records using Basic rest API");
     //    this.log.info("pullStatus:" + this.getPullStatus());
     Iterator<JsonElement> rs = null;
@@ -193,7 +195,8 @@ public abstract class BasicRestApiExtractor extends QueryBasedExtractor<JsonArra
     }
   }
 
-  protected CommandOutput<?, ?> executeRequest(List<Command> cmds) throws Exception {
+  protected CommandOutput<?, ?> executeRequest(List<Command> cmds)
+      throws Exception {
     if (cmds == null || cmds.isEmpty()) {
       return null;
     }
@@ -213,23 +216,27 @@ public abstract class BasicRestApiExtractor extends QueryBasedExtractor<JsonArra
     return output;
   }
 
-  protected CommandOutput<?, ?> executeGetRequest(List<Command> cmds) throws Exception {
+  protected CommandOutput<?, ?> executeGetRequest(List<Command> cmds)
+      throws Exception {
     String urlPath = cmds.get(0).getParams().get(0);
     this.log.info("URL: " + urlPath);
     String result = null;
     try {
       URL url = new URL(urlPath);
-      Proxy proxy =
-          new Proxy(Proxy.Type.HTTP, new InetSocketAddress(
-              this.workUnitState.getProp(ConfigurationKeys.SOURCE_CONN_USE_PROXY_URL),
-              this.workUnitState.getPropAsInt(ConfigurationKeys.SOURCE_CONN_USE_PROXY_PORT)));
-      connection = (HttpsURLConnection) url.openConnection(proxy);
+      String proxyUrl = this.workUnitState.getProp(ConfigurationKeys.SOURCE_CONN_USE_PROXY_URL);
+      if (proxyUrl != null) {
+        int proxyPort = this.workUnitState.getPropAsInt(ConfigurationKeys.SOURCE_CONN_USE_PROXY_PORT);
+        Proxy proxy = new Proxy(Proxy.Type.HTTP, new InetSocketAddress(proxyUrl, proxyPort));
+        connection = (HttpsURLConnection) url.openConnection(proxy);
+      } else {
+        connection = (HttpsURLConnection) url.openConnection();
+      }
+
       connection.setRequestProperty("Content-Type", "application/json");
       connection.setRequestProperty("Accept", "application/json");
       if (isBasicAuth()) {
-        String userpass =
-            this.workUnitState.getProp(ConfigurationKeys.SOURCE_CONN_USERNAME) + ":"
-                + this.workUnitState.getProp(ConfigurationKeys.SOURCE_CONN_PASSWORD);
+        String userpass = this.workUnitState.getProp(ConfigurationKeys.SOURCE_CONN_USERNAME) + ":" + this.workUnitState
+            .getProp(ConfigurationKeys.SOURCE_CONN_PASSWORD);
         String basicAuth = "Basic " + new String(new Base64().encode(userpass.getBytes()));
         connection.setRequestProperty("Authorization", basicAuth);
       }
@@ -253,30 +260,33 @@ public abstract class BasicRestApiExtractor extends QueryBasedExtractor<JsonArra
   }
 
   private boolean isBasicAuth() {
-    if (StringUtils.isNotBlank(this.workUnitState.getProp(ConfigurationKeys.SOURCE_CONN_USERNAME))
-        && StringUtils.isNotBlank(this.workUnitState.getProp(ConfigurationKeys.SOURCE_CONN_PASSWORD))) {
+    if (StringUtils.isNotBlank(this.workUnitState.getProp(ConfigurationKeys.SOURCE_CONN_USERNAME)) && StringUtils
+        .isNotBlank(this.workUnitState.getProp(ConfigurationKeys.SOURCE_CONN_PASSWORD))) {
       return true;
     }
     return false;
   }
 
-  protected InputStream getRequestAsStream(String urlPath) throws Exception {
+  protected InputStream getRequestAsStream(String urlPath)
+      throws Exception {
     this.log.info("URL: " + urlPath);
     InputStream stream = null;
     try {
       URL url = new URL(urlPath);
-      Proxy proxy =
-          new Proxy(Proxy.Type.HTTP, new InetSocketAddress(
-              this.workUnitState.getProp(ConfigurationKeys.SOURCE_CONN_USE_PROXY_URL),
-              this.workUnitState.getPropAsInt(ConfigurationKeys.SOURCE_CONN_USE_PROXY_PORT)));
-      connection = (HttpsURLConnection) url.openConnection(proxy);
+      String proxyUrl = this.workUnitState.getProp(ConfigurationKeys.SOURCE_CONN_USE_PROXY_URL);
+      if (proxyUrl != null) {
+        int proxyPort = this.workUnitState.getPropAsInt(ConfigurationKeys.SOURCE_CONN_USE_PROXY_PORT);
+        Proxy proxy = new Proxy(Proxy.Type.HTTP, new InetSocketAddress(proxyUrl, proxyPort));
+        connection = (HttpsURLConnection) url.openConnection(proxy);
+      } else {
+        connection = (HttpsURLConnection) url.openConnection();
+      }
 
       connection.setRequestProperty("Content-Type", "application/json");
       connection.setRequestProperty("Accept", "application/json");
       if (isBasicAuth()) {
-        String userpass =
-            this.workUnitState.getProp(ConfigurationKeys.SOURCE_CONN_USERNAME) + ":"
-                + this.workUnitState.getProp(ConfigurationKeys.SOURCE_CONN_PASSWORD);
+        String userpass = this.workUnitState.getProp(ConfigurationKeys.SOURCE_CONN_USERNAME) + ":" + this.workUnitState
+            .getProp(ConfigurationKeys.SOURCE_CONN_PASSWORD);
         String basicAuth = "Basic " + new String(new Base64().encode(userpass.getBytes()));
         connection.setRequestProperty("Authorization", basicAuth);
       }
@@ -301,7 +311,8 @@ public abstract class BasicRestApiExtractor extends QueryBasedExtractor<JsonArra
     return false;
   }
 
-  private CommandOutput<?, ?> executePostRequest(List<Command> cmds) throws Exception {
+  private CommandOutput<?, ?> executePostRequest(List<Command> cmds)
+      throws Exception {
     List<String> params = cmds.get(0).getParams();
 
     CommandOutput<RestApiCommand, String> output = new RestApiCommandOutput();
@@ -315,17 +326,19 @@ public abstract class BasicRestApiExtractor extends QueryBasedExtractor<JsonArra
         String payLoad = params.get(1);
         this.log.info("URL:" + params.get(0) + "; payLoad:" + payLoad);
 
-        Proxy proxy =
-            new Proxy(Proxy.Type.HTTP, new InetSocketAddress(
-                this.workUnitState.getProp(ConfigurationKeys.SOURCE_CONN_USE_PROXY_URL),
-                this.workUnitState.getPropAsInt(ConfigurationKeys.SOURCE_CONN_USE_PROXY_PORT)));
-        connection = (HttpsURLConnection) url.openConnection(proxy);
-        //        connection = (HttpURLConnection) url.openConnection();
+        String proxyUrl = this.workUnitState.getProp(ConfigurationKeys.SOURCE_CONN_USE_PROXY_URL);
+        if (proxyUrl != null) {
+          int proxyPort = this.workUnitState.getPropAsInt(ConfigurationKeys.SOURCE_CONN_USE_PROXY_PORT);
+          Proxy proxy = new Proxy(Proxy.Type.HTTP, new InetSocketAddress(proxyUrl, proxyPort));
+          connection = (HttpsURLConnection) url.openConnection(proxy);
+        } else {
+          connection = (HttpsURLConnection) url.openConnection();
+        }
 
         if (isBasicAuth()) {
           String userpass =
-              this.workUnitState.getProp(ConfigurationKeys.SOURCE_CONN_USERNAME) + ":"
-                  + this.workUnitState.getProp(ConfigurationKeys.SOURCE_CONN_PASSWORD);
+              this.workUnitState.getProp(ConfigurationKeys.SOURCE_CONN_USERNAME) + ":" + this.workUnitState
+                  .getProp(ConfigurationKeys.SOURCE_CONN_PASSWORD);
           String basicAuth = "Basic " + new String(new Base64().encode(userpass.getBytes()));
           connection.setRequestProperty("Authorization", basicAuth);
         }
@@ -400,9 +413,8 @@ public abstract class BasicRestApiExtractor extends QueryBasedExtractor<JsonArra
 
   protected String toCase(String targetColumnName) {
     String columnName = targetColumnName;
-    ColumnNameCase caseType =
-        ColumnNameCase.valueOf(this.workUnitState.getProp(ConfigurationKeys.SOURCE_COLUMN_NAME_CASE,
-            ConfigurationKeys.DEFAULT_COLUMN_NAME_CASE).toUpperCase());
+    ColumnNameCase caseType = ColumnNameCase.valueOf(this.workUnitState
+        .getProp(ConfigurationKeys.SOURCE_COLUMN_NAME_CASE, ConfigurationKeys.DEFAULT_COLUMN_NAME_CASE).toUpperCase());
     switch (caseType) {
       case TOUPPER:
         columnName = targetColumnName.toUpperCase();
@@ -418,7 +430,8 @@ public abstract class BasicRestApiExtractor extends QueryBasedExtractor<JsonArra
   }
 
   @Override
-  public void closeConnection() throws Exception {
+  public void closeConnection()
+      throws Exception {
     if (bufferedReader != null) {
       bufferedReader.close();
     }
@@ -430,7 +443,8 @@ public abstract class BasicRestApiExtractor extends QueryBasedExtractor<JsonArra
 
   @Override
   public Iterator<JsonElement> getRecordSetFromSourceApi(String schema, String entity, WorkUnit workUnit,
-      List<Predicate> predicateList) throws IOException {
+      List<Predicate> predicateList)
+      throws IOException {
     // TODO Auto-generated method stub
     return null;
   }
@@ -440,7 +454,8 @@ public abstract class BasicRestApiExtractor extends QueryBasedExtractor<JsonArra
     // TODO Auto-generated method stub
   }
 
-  protected boolean isEmptyBuffer() throws IOException {
+  protected boolean isEmptyBuffer()
+      throws IOException {
     if (this.bufferedReader == null || !this.bufferedReader.ready()) {
       return true;
     }
@@ -453,13 +468,14 @@ public abstract class BasicRestApiExtractor extends QueryBasedExtractor<JsonArra
       Schema obj = new Schema();
       obj.setColumnName(columnName);
       obj.setComment("resolved");
-      obj.setWaterMark(this.isWatermarkColumn(workUnit.getProp(ConfigurationKeys.EXTRACT_DELTA_FIELDS_KEY), columnName));
+      obj.setWaterMark(
+          this.isWatermarkColumn(workUnit.getProp(ConfigurationKeys.EXTRACT_DELTA_FIELDS_KEY), columnName));
 
       if (this.isWatermarkColumn(workUnit.getProp(ConfigurationKeys.EXTRACT_DELTA_FIELDS_KEY), columnName)) {
         obj.setNullable(false);
         obj.setDataType(this.getTimestampDataType(columnName));
-      } else if (this
-          .getPrimarykeyIndex(workUnit.getProp(ConfigurationKeys.EXTRACT_PRIMARY_KEY_FIELDS_KEY), columnName) == 0) {
+      } else if (this.getPrimarykeyIndex(workUnit.getProp(ConfigurationKeys.EXTRACT_PRIMARY_KEY_FIELDS_KEY), columnName)
+          == 0) {
         // set all columns as nullable except primary key and watermark columns
         obj.setNullable(true);
       }
@@ -468,8 +484,8 @@ public abstract class BasicRestApiExtractor extends QueryBasedExtractor<JsonArra
         obj.setDataType(this.getTimestampDataType(columnName));
       }
 
-      obj.setPrimaryKey(this.getPrimarykeyIndex(workUnit.getProp(ConfigurationKeys.EXTRACT_PRIMARY_KEY_FIELDS_KEY),
-          columnName));
+      obj.setPrimaryKey(
+          this.getPrimarykeyIndex(workUnit.getProp(ConfigurationKeys.EXTRACT_PRIMARY_KEY_FIELDS_KEY), columnName));
 
       String jsonStr = gson.toJson(obj);
       JsonObject jsonObject = gson.fromJson(jsonStr, JsonObject.class).getAsJsonObject();
