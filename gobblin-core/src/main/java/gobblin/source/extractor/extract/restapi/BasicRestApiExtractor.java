@@ -13,17 +13,16 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.zip.GZIPInputStream;
 
-import javax.net.ssl.HttpsURLConnection;
-
 import org.apache.commons.codec.binary.Base64;
 import org.apache.commons.lang.StringUtils;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import com.google.gson.Gson;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+
+import javax.net.ssl.HttpsURLConnection;
+import lombok.extern.slf4j.Slf4j;
 
 import gobblin.configuration.ConfigurationKeys;
 import gobblin.configuration.WorkUnitState;
@@ -42,22 +41,11 @@ import gobblin.source.extractor.watermark.Predicate;
 import gobblin.source.workunit.WorkUnit;
 
 
+@Slf4j
 public abstract class BasicRestApiExtractor extends QueryBasedExtractor<JsonArray, JsonElement> implements SourceSpecificLayer<JsonArray, JsonElement>, RestApiSpecificLayer {
-  private Logger log = LoggerFactory.getLogger(BasicRestApiExtractor.class);
-  private HttpsURLConnection connection = null;
   protected static final Gson gson = new Gson();
-  protected boolean pullStatus = true;
   protected long processedRecordCount = 0;
-  protected boolean firstRun = true;
-  protected BufferedReader bufferedReader = null;
-
-  public boolean isFirstRun() {
-    return firstRun;
-  }
-
-  public void setFirstRun(boolean firstRun) {
-    this.firstRun = firstRun;
-  }
+  private boolean _firstRun = true;
 
   public long getProcessedRecordCount() {
     return processedRecordCount;
@@ -67,12 +55,8 @@ public abstract class BasicRestApiExtractor extends QueryBasedExtractor<JsonArra
     this.processedRecordCount = processedRecordCount;
   }
 
-  public void setPullStatus(boolean pullStatus) {
-    this.pullStatus = pullStatus;
-  }
-
   public boolean getPullStatus() {
-    return this.pullStatus;
+    return true;
   }
 
   public BasicRestApiExtractor(WorkUnitState workUnitState) {
@@ -83,7 +67,7 @@ public abstract class BasicRestApiExtractor extends QueryBasedExtractor<JsonArra
   public void extractMetadata(String schema, String entity, WorkUnit workUnit)
       throws SchemaException, IOException {
     // TODO Auto-generated method stub
-    this.log.info("Extract Metadata using REST Api");
+    log.info("Extract Metadata using REST Api");
     JsonArray columnArray = new JsonArray();
     JsonArray array = null;
     try {
@@ -94,7 +78,7 @@ public abstract class BasicRestApiExtractor extends QueryBasedExtractor<JsonArra
       }
       array = this.getSchema(response);
       if (array == null) {
-        this.log.warn("Schema not found in metadata and configurations");
+        log.warn("Schema not found in metadata and configurations");
         columnArray = this.getDefaultSchema();
       } else {
         for (JsonElement columnElement : array) {
@@ -122,7 +106,7 @@ public abstract class BasicRestApiExtractor extends QueryBasedExtractor<JsonArra
         }
       }
 
-      this.log.info("Schema:" + columnArray);
+      log.info("Schema:" + columnArray);
       this.setOutputSchema(columnArray);
     } catch (Exception e) {
       throw new SchemaException("Failed to get schema using rest api; error - " + e.getMessage(), e);
@@ -133,7 +117,7 @@ public abstract class BasicRestApiExtractor extends QueryBasedExtractor<JsonArra
   public long getMaxWatermark(String schema, String entity, String watermarkColumn,
       List<Predicate> snapshotPredicateList, String watermarkSourceFormat)
       throws HighWatermarkException {
-    this.log.debug("Get high watermark using Rest Api");
+    log.debug("Get high watermark using Rest Api");
     long CalculatedHighWatermark = -1;
     try {
       List<Command> cmds = this.getHighWatermarkMetadata(schema, entity, watermarkColumn, snapshotPredicateList);
@@ -152,7 +136,7 @@ public abstract class BasicRestApiExtractor extends QueryBasedExtractor<JsonArra
   @Override
   public long getSourceCount(String schema, String entity, WorkUnit workUnit, List<Predicate> predicateList)
       throws RecordCountException {
-    this.log.debug("Get source record count using Rest Api");
+    log.debug("Get source record count using Rest Api");
     long count = 0;
     try {
       List<Command> cmds = this.getCountMetadata(schema, entity, workUnit, predicateList);
@@ -171,22 +155,20 @@ public abstract class BasicRestApiExtractor extends QueryBasedExtractor<JsonArra
   public Iterator<JsonElement> getRecordSet(String schema, String entity, WorkUnit workUnit,
       List<Predicate> predicateList)
       throws DataRecordException, IOException {
-    //    this.log.info("Get data records using Basic rest API");
-    //    this.log.info("pullStatus:" + this.getPullStatus());
-    Iterator<JsonElement> rs = null;
+    Iterator<JsonElement> rs;
     CommandOutput<?, ?> response = null;
     try {
-      if (this.getPullStatus() == false) {
-        this.log.info("pull status false");
+      if (!this.getPullStatus()) {
+        log.info("pull status false");
         return null;
       } else {
-        if (this.isFirstRun()) {
+        if (_firstRun) {
           List<Command> cmds = this.getDataMetadata(schema, entity, workUnit, predicateList);
           response = this.executePostRequest(cmds);
         }
         rs = this.getData(response);
-        this.log.info("Total number of records processed - " + this.processedRecordCount);
-        this.setFirstRun(false);
+        log.info("Total number of records processed - " + this.processedRecordCount);
+        _firstRun = false;
       }
       return rs;
     } catch (Exception e) {
@@ -210,45 +192,27 @@ public abstract class BasicRestApiExtractor extends QueryBasedExtractor<JsonArra
         output = executePostRequest(cmds);
         break;
       default:
-        this.log.error("Invalid REST API command type " + commandType);
+        log.error("Invalid REST API command type " + commandType);
         break;
     }
     return output;
   }
 
-  protected CommandOutput<?, ?> executeGetRequest(List<Command> cmds)
+  private CommandOutput<?, ?> executeGetRequest(List<Command> cmds)
       throws Exception {
+    HttpsURLConnection connection = null;
     String urlPath = cmds.get(0).getParams().get(0);
-    this.log.info("URL: " + urlPath);
     String result = null;
     try {
-      URL url = new URL(urlPath);
-      String proxyUrl = this.workUnitState.getProp(ConfigurationKeys.SOURCE_CONN_USE_PROXY_URL);
-      if (proxyUrl != null) {
-        int proxyPort = this.workUnitState.getPropAsInt(ConfigurationKeys.SOURCE_CONN_USE_PROXY_PORT);
-        Proxy proxy = new Proxy(Proxy.Type.HTTP, new InetSocketAddress(proxyUrl, proxyPort));
-        connection = (HttpsURLConnection) url.openConnection(proxy);
-      } else {
-        connection = (HttpsURLConnection) url.openConnection();
-      }
-
-      connection.setRequestProperty("Content-Type", "application/json");
+      connection = getConnection(urlPath, workUnitState);
       connection.setRequestProperty("Accept", "application/json");
-      if (isBasicAuth()) {
-        String userpass = this.workUnitState.getProp(ConfigurationKeys.SOURCE_CONN_USERNAME) + ":" + this.workUnitState
-            .getProp(ConfigurationKeys.SOURCE_CONN_PASSWORD);
-        String basicAuth = "Basic " + new String(new Base64().encode(userpass.getBytes()));
-        connection.setRequestProperty("Authorization", basicAuth);
-      }
-
-      connection.setConnectTimeout(this.workUnitState.getPropAsInt(ConfigurationKeys.SOURCE_CONN_TIMEOUT, 30000));
 
       InputStream in = connection.getInputStream();
       result = getStringFromInputStream(in);
     } catch (RuntimeException e) {
       throw e;
     } catch (Exception e) {
-      this.log.error("failed to open stream for schema");
+      log.error("failed to open stream for schema");
     } finally {
       if (connection != null) {
         connection.disconnect();
@@ -259,38 +223,13 @@ public abstract class BasicRestApiExtractor extends QueryBasedExtractor<JsonArra
     return output;
   }
 
-  private boolean isBasicAuth() {
-    if (StringUtils.isNotBlank(this.workUnitState.getProp(ConfigurationKeys.SOURCE_CONN_USERNAME)) && StringUtils
-        .isNotBlank(this.workUnitState.getProp(ConfigurationKeys.SOURCE_CONN_PASSWORD))) {
-      return true;
-    }
-    return false;
-  }
-
   protected InputStream getRequestAsStream(String urlPath)
       throws Exception {
-    this.log.info("URL: " + urlPath);
+    HttpsURLConnection connection = null;
     InputStream stream = null;
     try {
-      URL url = new URL(urlPath);
-      String proxyUrl = this.workUnitState.getProp(ConfigurationKeys.SOURCE_CONN_USE_PROXY_URL);
-      if (proxyUrl != null) {
-        int proxyPort = this.workUnitState.getPropAsInt(ConfigurationKeys.SOURCE_CONN_USE_PROXY_PORT);
-        Proxy proxy = new Proxy(Proxy.Type.HTTP, new InetSocketAddress(proxyUrl, proxyPort));
-        connection = (HttpsURLConnection) url.openConnection(proxy);
-      } else {
-        connection = (HttpsURLConnection) url.openConnection();
-      }
-
-      connection.setRequestProperty("Content-Type", "application/json");
+      connection = getConnection(urlPath, workUnitState);
       connection.setRequestProperty("Accept", "application/json");
-      if (isBasicAuth()) {
-        String userpass = this.workUnitState.getProp(ConfigurationKeys.SOURCE_CONN_USERNAME) + ":" + this.workUnitState
-            .getProp(ConfigurationKeys.SOURCE_CONN_PASSWORD);
-        String basicAuth = "Basic " + new String(new Base64().encode(userpass.getBytes()));
-        connection.setRequestProperty("Authorization", basicAuth);
-      }
-      connection.setConnectTimeout(this.workUnitState.getPropAsInt(ConfigurationKeys.SOURCE_CONN_TIMEOUT, 30000));
       stream = connection.getInputStream();
       if (isZipFormat()) {
         stream = new GZIPInputStream(stream);
@@ -298,7 +237,7 @@ public abstract class BasicRestApiExtractor extends QueryBasedExtractor<JsonArra
     } catch (RuntimeException e) {
       throw e;
     } catch (Exception e) {
-      this.log.error("failed to open stream for schema");
+      log.error("failed to open stream for schema");
     }
     return stream;
   }
@@ -313,6 +252,7 @@ public abstract class BasicRestApiExtractor extends QueryBasedExtractor<JsonArra
 
   private CommandOutput<?, ?> executePostRequest(List<Command> cmds)
       throws Exception {
+    HttpsURLConnection connection = null;
     List<String> params = cmds.get(0).getParams();
 
     CommandOutput<RestApiCommand, String> output = new RestApiCommandOutput();
@@ -322,31 +262,12 @@ public abstract class BasicRestApiExtractor extends QueryBasedExtractor<JsonArra
     BufferedReader br = null;
     while (retryCount <= retryLimit && !isFinished) {
       try {
-        URL url = new URL(params.get(0));
         String payLoad = params.get(1);
-        this.log.info("URL:" + params.get(0) + "; payLoad:" + payLoad);
+        log.info("payLoad:" + payLoad);
 
-        String proxyUrl = this.workUnitState.getProp(ConfigurationKeys.SOURCE_CONN_USE_PROXY_URL);
-        if (proxyUrl != null) {
-          int proxyPort = this.workUnitState.getPropAsInt(ConfigurationKeys.SOURCE_CONN_USE_PROXY_PORT);
-          Proxy proxy = new Proxy(Proxy.Type.HTTP, new InetSocketAddress(proxyUrl, proxyPort));
-          connection = (HttpsURLConnection) url.openConnection(proxy);
-        } else {
-          connection = (HttpsURLConnection) url.openConnection();
-        }
-
-        if (isBasicAuth()) {
-          String userpass =
-              this.workUnitState.getProp(ConfigurationKeys.SOURCE_CONN_USERNAME) + ":" + this.workUnitState
-                  .getProp(ConfigurationKeys.SOURCE_CONN_PASSWORD);
-          String basicAuth = "Basic " + new String(new Base64().encode(userpass.getBytes()));
-          connection.setRequestProperty("Authorization", basicAuth);
-        }
-
+        connection = getConnection(params.get(0), workUnitState);
         connection.setDoOutput(true);
         connection.setRequestMethod("POST");
-        connection.setRequestProperty("Content-Type", "application/json");
-        connection.setConnectTimeout(this.workUnitState.getPropAsInt(ConfigurationKeys.SOURCE_CONN_TIMEOUT, 30000));
 
         OutputStream os = connection.getOutputStream();
         os.write(payLoad.getBytes());
@@ -432,34 +353,19 @@ public abstract class BasicRestApiExtractor extends QueryBasedExtractor<JsonArra
   @Override
   public void closeConnection()
       throws Exception {
-    if (bufferedReader != null) {
-      bufferedReader.close();
-    }
-    if (connection != null) {
-      connection.disconnect();
-    }
-    this.log.info("connection is closed");
   }
 
   @Override
   public Iterator<JsonElement> getRecordSetFromSourceApi(String schema, String entity, WorkUnit workUnit,
       List<Predicate> predicateList)
       throws IOException {
-    // TODO Auto-generated method stub
+    //This operation is not supported
     return null;
   }
 
   @Override
   public void setTimeOut(int timeOut) {
-    // TODO Auto-generated method stub
-  }
 
-  protected boolean isEmptyBuffer()
-      throws IOException {
-    if (this.bufferedReader == null || !this.bufferedReader.ready()) {
-      return true;
-    }
-    return false;
   }
 
   public void setSchema(List<String> cols, List<String> timestampColumns) {
@@ -492,7 +398,7 @@ public abstract class BasicRestApiExtractor extends QueryBasedExtractor<JsonArra
       columnArray.add(jsonObject);
     }
 
-    this.log.info("Resolved Schema:" + columnArray);
+    log.info("Resolved Schema:" + columnArray);
     this.setOutputSchema(columnArray);
   }
 
@@ -536,5 +442,33 @@ public abstract class BasicRestApiExtractor extends QueryBasedExtractor<JsonArra
       }
     }
     return columnArray;
+  }
+
+  private static HttpsURLConnection getConnection(String urlPath, WorkUnitState workUnitState)
+      throws IOException {
+    log.info("URL: " + urlPath);
+
+    URL url = new URL(urlPath);
+    HttpsURLConnection connection;
+    String proxyUrl = workUnitState.getProp(ConfigurationKeys.SOURCE_CONN_USE_PROXY_URL);
+    if (StringUtils.isNotBlank(proxyUrl)) {
+      int proxyPort = workUnitState.getPropAsInt(ConfigurationKeys.SOURCE_CONN_USE_PROXY_PORT);
+      Proxy proxy = new Proxy(Proxy.Type.HTTP, new InetSocketAddress(proxyUrl, proxyPort));
+      connection = (HttpsURLConnection) url.openConnection(proxy);
+    } else {
+      connection = (HttpsURLConnection) url.openConnection();
+    }
+
+    connection.setRequestProperty("Content-Type", "application/json");
+
+    String userName = workUnitState.getProp(ConfigurationKeys.SOURCE_CONN_USERNAME);
+    if (StringUtils.isNotBlank(userName)) {
+      String userpass = userName + ":" + workUnitState.getProp(ConfigurationKeys.SOURCE_CONN_PASSWORD);
+      String basicAuth = "Basic " + new String(new Base64().encode(userpass.getBytes()));
+      connection.setRequestProperty("Authorization", basicAuth);
+    }
+
+    connection.setConnectTimeout(workUnitState.getPropAsInt(ConfigurationKeys.SOURCE_CONN_TIMEOUT, 30000));
+    return connection;
   }
 }

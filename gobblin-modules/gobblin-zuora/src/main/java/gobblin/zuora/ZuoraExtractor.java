@@ -5,20 +5,21 @@ import java.io.IOException;
 import java.io.InputStreamReader;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 
 import org.apache.commons.lang.StringUtils;
 import org.apache.http.HttpEntity;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Lists;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+
+import lombok.extern.slf4j.Slf4j;
 
 import gobblin.configuration.ConfigurationKeys;
 import gobblin.configuration.WorkUnitState;
@@ -42,12 +43,11 @@ import gobblin.source.extractor.watermark.WatermarkType;
 import gobblin.source.workunit.WorkUnit;
 
 
+@Slf4j
 public class ZuoraExtractor extends BasicRestApiExtractor {
-  private Logger log = LoggerFactory.getLogger(ZuoraExtractor.class);
   private static final String TIMESTAMP_FORMAT = "yyyy-MM-dd'T'HH:mm:ss";
   private static final String DATE_FORMAT = "yyyy-MM-dd";
   private static final String HOUR_FORMAT = "HH";
-  private List<String> fileList = new ArrayList<String>();
   private int currentFileNum = 0;
   private boolean newFile = true;
   private List<String> recordHeader = null;
@@ -82,12 +82,14 @@ public class ZuoraExtractor extends BasicRestApiExtractor {
   }
 
   @Override
-  public List<Command> getSchemaMetadata(String schema, String entity) throws SchemaException {
+  public List<Command> getSchemaMetadata(String schema, String entity)
+      throws SchemaException {
     return null;
   }
 
   @Override
-  public JsonArray getSchema(CommandOutput<?, ?> response) throws SchemaException, IOException {
+  public JsonArray getSchema(CommandOutput<?, ?> response)
+      throws SchemaException, IOException {
     JsonArray schema = null;
     if (StringUtils.isNotBlank(this.workUnit.getProp(ConfigurationKeys.SOURCE_SCHEMA))) {
       JsonArray element = gson.fromJson(this.workUnit.getProp(ConfigurationKeys.SOURCE_SCHEMA), JsonArray.class);
@@ -99,9 +101,9 @@ public class ZuoraExtractor extends BasicRestApiExtractor {
   @Override
   public List<Command> getDataMetadata(String schema, String entity, WorkUnit workUnit, List<Predicate> predicateList)
       throws DataRecordException {
-    this.log.debug("Build url to retrieve data records");
+    log.debug("Build url to retrieve data records");
     try {
-      String host = this.workUnitState.getProp(ConfigurationKeys.SOURCE_CONN_HOST_NAME) + "batch-query/";
+      String host = getEndPoint("batch-query/");
       List<String> params = Lists.newLinkedList();
       params.add(host);
 
@@ -121,8 +123,8 @@ public class ZuoraExtractor extends BasicRestApiExtractor {
         }
       }
 
-      if (StringUtils.isBlank(limitString)
-          && StringUtils.isNotBlank(this.workUnitState.getProp(ZuoraConfigurationKeys.ZUORA_ROW_LIMIT))) {
+      if (StringUtils.isBlank(limitString) && StringUtils
+          .isNotBlank(this.workUnitState.getProp(ZuoraConfigurationKeys.ZUORA_ROW_LIMIT))) {
         limitString = " LIMIT " + this.workUnitState.getProp(ZuoraConfigurationKeys.ZUORA_ROW_LIMIT);
       }
 
@@ -133,9 +135,9 @@ public class ZuoraExtractor extends BasicRestApiExtractor {
       ZuoraParams filterPayload =
           new ZuoraParams(this.workUnitState.getProp(ZuoraConfigurationKeys.ZUORA_PARTNER, "sample"),
               this.workUnitState.getProp(ZuoraConfigurationKeys.ZUORA_PROJECT, "sample"), queries,
-              this.workUnitState.getProp(ZuoraConfigurationKeys.ZUORA_API_NAME, "sample"), this.workUnitState.getProp(
-                  ZuoraConfigurationKeys.ZUORA_OUTPUT_FORMAT, "csv"), this.workUnitState.getProp(
-                  ConfigurationKeys.SOURCE_CONN_VERSION, "1.1"));
+              this.workUnitState.getProp(ZuoraConfigurationKeys.ZUORA_API_NAME, "sample"),
+              this.workUnitState.getProp(ZuoraConfigurationKeys.ZUORA_OUTPUT_FORMAT, "csv"),
+              this.workUnitState.getProp(ConfigurationKeys.SOURCE_CONN_VERSION, "1.1"));
       params.add(gson.toJson(filterPayload));
 
       return Arrays.asList(new RestApiCommand().build(params, RestApiCommandType.PUT));
@@ -154,69 +156,64 @@ public class ZuoraExtractor extends BasicRestApiExtractor {
   }
 
   @Override
-  public Iterator<JsonElement> getData(CommandOutput<?, ?> response) throws DataRecordException, IOException {
-    this.log.debug("Get data records from response");
-    RecordSet<JsonElement> rs = null;
-
+  public Iterator<JsonElement> getData(CommandOutput<?, ?> response)
+      throws DataRecordException, IOException {
     try {
+      List<String> _fileList = null;
       if (response != null) {
-        String output;
         Iterator<String> itr = (Iterator<String>) response.getResults().values().iterator();
-        if (itr.hasNext()) {
-          output = itr.next();
-        } else {
+        if (!itr.hasNext()) {
           throw new DataRecordException("Failed to get data from RightNowCloud; REST response has no output");
         }
-        this.log.info("Batch query result:" + output);
-        JsonElement element = gson.fromJson(output, JsonObject.class);
-        JsonObject jsonObject = element.getAsJsonObject();
-        this.fileList = this.getFiles(jsonObject.get("id").getAsString());
-        this.log.info("Files:" + this.fileList);
+
+        String stringResponse = itr.next();
+        log.info("Batch query result: " + stringResponse);
+        JsonObject jsonObject = gson.fromJson(stringResponse, JsonObject.class).getAsJsonObject();
+        String jobId = jsonObject.get("id").getAsString();
+        _fileList = getFiles(jobId);
       }
 
+      RecordSet<JsonElement> rs = null;
       if (!this.isJobFinished()) {
-        rs = streamFiles();
+        rs = streamFiles(_fileList);
       }
-
       if (rs == null) {
         return null;
       }
       return rs.iterator();
-
     } catch (Exception e) {
       throw new DataRecordException("Failed to get records from RightNowCloud; error - " + e.getMessage(), e);
     }
   }
 
+  BufferedReader bufferedReader;
   /**
-   * Stream all files to extract resultset
-     * @return record set with each record as a JsonObject
+   * Stream all files to extract resultSet
+   * @return record set with each record as a JsonObject
    */
-  private RecordSet<JsonElement> streamFiles() throws DataRecordException {
-    this.log.debug("Stream all jobs");
-    RecordSetList<JsonElement> rs = new RecordSetList<JsonElement>();
-
+  private RecordSet<JsonElement> streamFiles(List<String> fileList)
+      throws DataRecordException {
+    log.info("Stream all jobs");
+    RecordSetList<JsonElement> rs = new RecordSetList<>();
     try {
-      if (this.isEmptyBuffer()) {
-        if (this.isResultSetAvailable()) {
-          this.log.debug("Stream resultset for resultId:" + fileList.get(currentFileNum));
-          this.bufferedReader =
-              new BufferedReader(new InputStreamReader(this.getRequestAsStream(this.getFileUrl(fileList
-                  .get(currentFileNum)))));
+      if (bufferedReader == null || !bufferedReader.ready()) {
+        if (currentFileNum < fileList.size()) {
+          log.debug("Stream resultset for resultId:" + fileList.get(currentFileNum));
+          bufferedReader = new BufferedReader(
+              new InputStreamReader(this.getRequestAsStream(getEndPoint("file/" + fileList.get(currentFileNum)))));
           //          this.printBuffer(); //Buffer will be empty after this
-          this.currentFileNum++;
-          this.setNewFile(true);
+          currentFileNum++;
+          setNewFile(true);
         } else {
           // Mark the job as finished if all files are processed
-          this.log.info("Job is finished");
+          log.info("Job is finished");
           this.setJobFinished(true);
           return rs;
         }
       }
 
-      int batchSize =
-          this.workUnit.getPropAsInt(ConfigurationKeys.SOURCE_QUERYBASED_FETCH_SIZE,
-              ConfigurationKeys.DEFAULT_SOURCE_FETCH_SIZE);
+      int batchSize = this.workUnit
+          .getPropAsInt(ConfigurationKeys.SOURCE_QUERYBASED_FETCH_SIZE, ConfigurationKeys.DEFAULT_SOURCE_FETCH_SIZE);
 
       // Stream the resultset through CSV reader to identify columns in each record
       InputStreamCSVReader reader = new InputStreamCSVReader(this.bufferedReader);
@@ -226,9 +223,9 @@ public class ZuoraExtractor extends BasicRestApiExtractor {
         List<String> recordHeader = this.cleanHeader(reader.nextRecord());
         List<String> timestampColumns = Lists.newArrayList();
         if (StringUtils.isNotBlank(this.workUnit.getProp(ZuoraConfigurationKeys.ZUORA_TIMESTAMP_COLUMNS))) {
-          timestampColumns =
-              Arrays.asList(this.workUnit.getProp(ZuoraConfigurationKeys.ZUORA_TIMESTAMP_COLUMNS).toLowerCase()
-                  .replaceAll(" ", "").split(","));
+          timestampColumns = Arrays.asList(
+              this.workUnit.getProp(ZuoraConfigurationKeys.ZUORA_TIMESTAMP_COLUMNS).toLowerCase().replaceAll(" ", "")
+                  .split(","));
         }
 
         if (StringUtils.isBlank(this.workUnit.getProp(ConfigurationKeys.SOURCE_SCHEMA))) {
@@ -238,7 +235,7 @@ public class ZuoraExtractor extends BasicRestApiExtractor {
         this.setRecordHeader(recordHeader);
         this.setNewFile(false);
 
-        this.log.info("record header:" + getRecordHeader());
+        log.info("record header:" + getRecordHeader());
       }
 
       List<String> csvRecord;
@@ -253,7 +250,7 @@ public class ZuoraExtractor extends BasicRestApiExtractor {
         recordCount++;
         // Insert records in record set until it reaches the batch size
         if (recordCount >= batchSize) {
-          this.log.debug("Number of records in batch: " + recordCount);
+          log.debug("Number of records in batch: " + recordCount);
           break;
         }
       }
@@ -279,59 +276,48 @@ public class ZuoraExtractor extends BasicRestApiExtractor {
     return columns;
   }
 
-  protected void printBuffer() throws IOException {
+  protected void printBuffer()
+      throws IOException {
     String line;
     while ((line = bufferedReader.readLine()) != null) {
-      this.log.info("line:" + line);
+      log.info("line:" + line);
     }
   }
 
-  private boolean isResultSetAvailable() {
-    if (this.currentFileNum < this.fileList.size()) {
-      return true;
-    }
-    return false;
+  private String getEndPoint(String relativeUrl) {
+    return this.workUnitState.getProp(ConfigurationKeys.SOURCE_CONN_HOST_NAME) + relativeUrl;
   }
 
-  private String getFileUrl(String fileId) {
-    return this.workUnitState.getProp(ConfigurationKeys.SOURCE_CONN_HOST_NAME) + "file/" + fileId;
-  }
-
-  private List<String> getFiles(String jobId) throws Exception {
-    this.log.debug("Get files for job " + jobId);
-    String URL = this.workUnitState.getProp(ConfigurationKeys.SOURCE_CONN_HOST_NAME) + "batch-query/jobs/" + jobId;
-    List<String> params = Lists.newLinkedList();
-    params.add(URL);
-    List<Command> cmds = Arrays.asList(new RestApiCommand().build(params, RestApiCommandType.GET));
+  private List<String> getFiles(String jobId)
+      throws Exception {
+    log.info("Get files for job " + jobId);
+    String url = getEndPoint("batch-query/jobs/" + jobId);
+    Command cmd = new RestApiCommand().build(Collections.singleton(url), RestApiCommandType.GET);
 
     String status = "pending";
     JsonObject jsonObject = null;
     while (!status.equals("completed")) {
-      CommandOutput<?, ?> response = this.executeRequest(cmds);
-      String output;
+      CommandOutput<?, ?> response = this.executeRequest(Collections.singletonList(cmd));
       Iterator<String> itr = (Iterator<String>) response.getResults().values().iterator();
-      if (itr.hasNext()) {
-        output = itr.next();
-        this.log.info("Job " + jobId + " output: " + output);
-      } else {
+      if (!itr.hasNext()) {
         throw new DataRecordException("Failed to get data from RightNowCloud; REST response has no output");
       }
+      String output = itr.next();
+      log.info("Job " + jobId + " output: " + output);
 
-      JsonElement element = gson.fromJson(output, JsonObject.class);
-      jsonObject = element.getAsJsonObject();
+      jsonObject = gson.fromJson(output, JsonObject.class).getAsJsonObject();
       status = jsonObject.get("status").getAsString();
       if (!status.equals("completed")) {
-        this.log.info("Waiting for job to complete");
+        log.info("Waiting for job to complete");
         Thread.sleep(5000);
       }
     }
 
     List<String> fileIds = Lists.newArrayList();
-    JsonArray array = jsonObject.get("batches").getAsJsonArray();
-    for (JsonElement obj : array) {
-      JsonObject item = obj.getAsJsonObject();
-      fileIds.add(item.get("fileId").getAsString());
+    for (JsonElement jsonObj : jsonObject.get("batches").getAsJsonArray()) {
+      fileIds.add(jsonObj.getAsJsonObject().get("fileId").getAsString());
     }
+    log.info("Files:" + fileIds);
     return fileIds;
   }
 
@@ -374,7 +360,8 @@ public class ZuoraExtractor extends BasicRestApiExtractor {
 
   @Override
   public List<Command> getHighWatermarkMetadata(String schema, String entity, String watermarkColumn,
-      List<Predicate> predicateList) throws HighWatermarkException {
+      List<Predicate> predicateList)
+      throws HighWatermarkException {
     return null;
   }
 
@@ -391,22 +378,23 @@ public class ZuoraExtractor extends BasicRestApiExtractor {
   }
 
   @Override
-  public long getCount(CommandOutput<?, ?> response) throws RecordCountException {
+  public long getCount(CommandOutput<?, ?> response)
+      throws RecordCountException {
     return -1;
   }
 
   @Override
   public Map<String, String> getDataTypeMap() {
     Map<String, String> dataTypeMap =
-        ImmutableMap.<String, String> builder().put("date", "date").put("datetime", "timestamp").put("time", "time")
-            .put("string", "string").put("int", "int").put("long", "long").put("float", "float")
-            .put("double", "double").put("decimal", "double").put("varchar", "string").put("boolean", "boolean")
-            .build();
+        ImmutableMap.<String, String>builder().put("date", "date").put("datetime", "timestamp").put("time", "time")
+            .put("string", "string").put("int", "int").put("long", "long").put("float", "float").put("double", "double")
+            .put("decimal", "double").put("varchar", "string").put("boolean", "boolean").build();
     return dataTypeMap;
   }
 
   @Override
-  public HttpEntity getAuthentication() throws RestApiConnectionException {
+  public HttpEntity getAuthentication()
+      throws RestApiConnectionException {
     // TODO Auto-generated method stub
     return null;
   }
