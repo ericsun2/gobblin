@@ -368,7 +368,7 @@ public abstract class BasicRestApiExtractor extends QueryBasedExtractor<JsonArra
 
   }
 
-  public void setSchema(List<String> cols, List<String> timestampColumns) {
+  protected void setSchema(List<String> cols, List<String> timestampColumns) {
     JsonArray columnArray = new JsonArray();
     for (String columnName : cols) {
       Schema obj = new Schema();
