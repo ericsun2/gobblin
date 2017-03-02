@@ -1,6 +1,5 @@
 package gobblin.zuora;
 
-import java.io.BufferedReader;
 import java.util.List;
 
 import gobblin.source.extractor.DataRecordException;
@@ -23,6 +22,5 @@ public interface ZuoraClient {
   CommandOutput<RestApiCommand, String> executeGetRequest(final Command cmd)
       throws Exception;
 
-  BufferedReader getFileBufferedReader(String fileId)
-      throws Exception;
+  String getEndPoint(String relativeUrl);
 }

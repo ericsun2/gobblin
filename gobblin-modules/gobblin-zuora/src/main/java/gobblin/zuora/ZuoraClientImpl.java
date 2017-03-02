@@ -2,7 +2,6 @@ package gobblin.zuora;
 
 import java.io.BufferedReader;
 import java.io.IOException;
-import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.util.Collections;
@@ -10,7 +9,6 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.concurrent.Callable;
 import java.util.concurrent.TimeUnit;
-import java.util.zip.GZIPInputStream;
 
 import org.apache.commons.lang.StringUtils;
 
@@ -39,7 +37,7 @@ import gobblin.source.extractor.watermark.Predicate;
 
 
 @Slf4j
-public class ZuoraClientImpl implements ZuoraClient {
+class ZuoraClientImpl implements ZuoraClient {
   private static final Gson gson = new Gson();
   private final WorkUnitState _workUnitState;
   private final String _hostName;
@@ -55,53 +53,6 @@ public class ZuoraClientImpl implements ZuoraClient {
             .withWaitStrategy(WaitStrategies
                 .fixedWait(workUnitState.getPropAsInt(RestAPIConfigurationKeys.REST_API_RETRY_WAIT_TIME_MILLIS, 10000),
                     TimeUnit.MILLISECONDS)).build();
-  }
-
-  public static String getJobId(CommandOutput<?, ?> postResponse)
-      throws DataRecordException {
-    Iterator<String> itr = (Iterator<String>) postResponse.getResults().values().iterator();
-    if (!itr.hasNext()) {
-      throw new DataRecordException("Failed to get data from RightNowCloud; REST postResponse has no output");
-    }
-
-    String stringResponse = itr.next();
-    log.info("Batch query result: " + stringResponse);
-    JsonObject jsonObject = gson.fromJson(stringResponse, JsonObject.class).getAsJsonObject();
-    return jsonObject.get("id").getAsString();
-  }
-
-  @Override
-  public List<String> getFileIds(String jobId)
-      throws Exception {
-    log.info("Get files for job " + jobId);
-    String url = getEndPoint("batch-query/jobs/" + jobId);
-    Command cmd = new RestApiCommand().build(Collections.singleton(url), RestApiCommand.RestApiCommandType.GET);
-
-    String status = "pending";
-    JsonObject jsonObject = null;
-    while (!status.equals("completed")) {
-      CommandOutput<RestApiCommand, String> response = executeGetRequest(cmd);
-      Iterator<String> itr = response.getResults().values().iterator();
-      if (!itr.hasNext()) {
-        throw new DataRecordException("Failed to get data from RightNowCloud; REST response has no output");
-      }
-      String output = itr.next();
-      log.info("Job " + jobId + " output: " + output);
-
-      jsonObject = gson.fromJson(output, JsonObject.class).getAsJsonObject();
-      status = jsonObject.get("status").getAsString();
-      if (!status.equals("completed")) {
-        log.info("Waiting for job to complete");
-        Thread.sleep(5000);
-      }
-    }
-
-    List<String> fileIds = Lists.newArrayList();
-    for (JsonElement jsonObj : jsonObject.get("batches").getAsJsonArray()) {
-      fileIds.add(jsonObj.getAsJsonObject().get("fileId").getAsString());
-    }
-    log.info("Files:" + fileIds);
-    return fileIds;
   }
 
   @Override
@@ -151,11 +102,75 @@ public class ZuoraClientImpl implements ZuoraClient {
     }
   }
 
+  public static String getJobId(CommandOutput<?, ?> postResponse)
+      throws DataRecordException {
+    Iterator<String> itr = (Iterator<String>) postResponse.getResults().values().iterator();
+    if (!itr.hasNext()) {
+      throw new DataRecordException("Failed to get data from RightNowCloud; REST postResponse has no output");
+    }
+
+    String stringResponse = itr.next();
+    log.info("Zuora post response: " + stringResponse);
+    JsonObject jsonObject = gson.fromJson(stringResponse, JsonObject.class).getAsJsonObject();
+    return jsonObject.get("id").getAsString();
+  }
+
+  @Override
+  public List<String> getFileIds(String jobId)
+      throws Exception {
+    log.info("Getting files for job " + jobId);
+    String url = getEndPoint("batch-query/jobs/" + jobId);
+    Command cmd = new RestApiCommand().build(Collections.singleton(url), RestApiCommand.RestApiCommandType.GET);
+
+    String status = null;
+    while (!StringUtils.equals(status, "completed")) {
+      CommandOutput<RestApiCommand, String> response = executeGetRequest(cmd);
+      Iterator<String> itr = response.getResults().values().iterator();
+      if (!itr.hasNext()) {
+        throw new DataRecordException("Failed to get data from RightNowCloud; getFileId phase has no response.");
+      }
+      String output = itr.next();
+      JsonObject jsonResp = gson.fromJson(output, JsonObject.class).getAsJsonObject();
+      status = jsonResp.get("status").getAsString();
+      log.info(String.format("Job %s %s: %s", jobId, status, output));
+      if (status.equals("completed")) {
+        List<String> fileIds = Lists.newArrayList();
+        for (JsonElement jsonObj : jsonResp.get("batches").getAsJsonArray()) {
+          fileIds.add(jsonObj.getAsJsonObject().get("fileId").getAsString());
+        }
+        log.info("Get Files Response - FileIds: " + fileIds);
+        return fileIds;
+      }
+      Thread.sleep(5000);
+    }
+    return null;
+  }
+
+  @Override
+  public CommandOutput<RestApiCommand, String> executeGetRequest(final Command cmd)
+      throws Exception {
+    HttpsURLConnection connection = null;
+    try {
+      String urlPath = cmd.getParams().get(0);
+      connection = ZuoraUtil.getConnection(urlPath, _workUnitState);
+      connection.setRequestProperty("Accept", "application/json");
+
+      String result = ZuoraUtil.getStringFromInputStream(connection.getInputStream());
+      CommandOutput<RestApiCommand, String> output = new RestApiCommandOutput();
+      output.put((RestApiCommand) cmd, result);
+      return output;
+    } finally {
+      if (connection != null) {
+        connection.disconnect();
+      }
+    }
+  }
+
   private CommandOutput<RestApiCommand, String> executePostRequestInternal(Command command)
       throws IOException {
     List<String> params = command.getParams();
     String payLoad = params.get(1);
-    log.info("payLoad:" + payLoad);
+    log.info("Executing post request with payLoad:" + payLoad);
 
     BufferedReader br = null;
     HttpsURLConnection connection = null;
@@ -188,52 +203,7 @@ public class ZuoraClientImpl implements ZuoraClient {
   }
 
   @Override
-  public CommandOutput<RestApiCommand, String> executeGetRequest(final Command cmd)
-      throws Exception {
-    HttpsURLConnection connection = null;
-    String urlPath = cmd.getParams().get(0);
-    String result = null;
-    try {
-      connection = ZuoraUtil.getConnection(urlPath, _workUnitState);
-      connection.setRequestProperty("Accept", "application/json");
-
-      InputStream in = connection.getInputStream();
-      result = ZuoraUtil.getStringFromInputStream(in);
-    } catch (RuntimeException e) {
-      throw e;
-    } catch (Exception e) {
-      log.error("failed to open stream for schema");
-    } finally {
-      if (connection != null) {
-        connection.disconnect();
-      }
-    }
-    CommandOutput<RestApiCommand, String> output = new RestApiCommandOutput();
-    output.put((RestApiCommand) cmd, result);
-    return output;
-  }
-
-  @Override
-  public BufferedReader getFileBufferedReader(String fileId)
-      throws Exception {
-    HttpsURLConnection connection;
-    InputStream stream = null;
-    try {
-      connection = ZuoraUtil.getConnection(getEndPoint("file/" + fileId), _workUnitState);
-      connection.setRequestProperty("Accept", "application/json");
-      stream = connection.getInputStream();
-      String format = _workUnitState.getProp(RestAPIConfigurationKeys.REST_API_OUTPUT_FORMAT);
-      if (StringUtils.isNotBlank(format) && format.equalsIgnoreCase("gzip")) {
-        stream = new GZIPInputStream(stream);
-      }
-    } catch (Exception e) {
-      log.error("failed to open stream for schema");
-    }
-
-    return new BufferedReader(new InputStreamReader(stream));
-  }
-
-  private String getEndPoint(String relativeUrl) {
+  public String getEndPoint(String relativeUrl) {
     return _hostName + relativeUrl;
   }
 }

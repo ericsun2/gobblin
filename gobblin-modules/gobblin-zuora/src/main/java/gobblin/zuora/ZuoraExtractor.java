@@ -1,7 +1,7 @@
 package gobblin.zuora;
 
-import java.io.BufferedReader;
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Iterator;
 import java.util.List;
@@ -29,9 +29,7 @@ import gobblin.source.extractor.extract.Command;
 import gobblin.source.extractor.extract.CommandOutput;
 import gobblin.source.extractor.extract.restapi.RestApiCommand;
 import gobblin.source.extractor.resultset.RecordSet;
-import gobblin.source.extractor.resultset.RecordSetList;
 import gobblin.source.extractor.schema.Schema;
-import gobblin.source.extractor.utils.InputStreamCSVReader;
 import gobblin.source.extractor.utils.Utils;
 import gobblin.source.extractor.watermark.Predicate;
 import gobblin.source.extractor.watermark.WatermarkType;
@@ -44,20 +42,13 @@ public class ZuoraExtractor extends BasicRestApiExtractor {
   private static final String DATE_FORMAT = "yyyy-MM-dd";
   private static final String HOUR_FORMAT = "HH";
   private final ZuoraClient _client;
+  private final ZuoraClientFilesStreamer _fileStreamer;
   private boolean _firstRun = true;
-
-  private BufferedReader _currentReader;
-  private int _currentFileIndex = 0;
-  private List<String> _header = null;
-  private boolean _jobFinished = false;
-  private final int _batchSize;
-  private long _totalRecords = 0;
 
   public ZuoraExtractor(WorkUnitState workUnitState) {
     super(workUnitState);
     _client = new ZuoraClientImpl(workUnitState);
-    _batchSize = workUnitState
-        .getPropAsInt(ConfigurationKeys.SOURCE_QUERYBASED_FETCH_SIZE, ConfigurationKeys.DEFAULT_SOURCE_FETCH_SIZE);
+    _fileStreamer = new ZuoraClientFilesStreamer(workUnitState, _client, this);
   }
 
   @Override
@@ -71,8 +62,8 @@ public class ZuoraExtractor extends BasicRestApiExtractor {
       }
 
       RecordSet<JsonElement> rs = null;
-      if (!_jobFinished) {
-        rs = streamFiles(fileIds);
+      if (!_fileStreamer.isJobFinished()) {
+        rs = _fileStreamer.streamFiles(fileIds);
       }
       if (rs == null) {
         return null;
@@ -81,58 +72,6 @@ public class ZuoraExtractor extends BasicRestApiExtractor {
     } catch (Exception e) {
       throw new DataRecordException("Failed to get records from RightNowCloud; error - " + e.getMessage(), e);
     }
-  }
-
-  private RecordSet<JsonElement> streamFiles(List<String> fileList)
-      throws DataRecordException {
-    log.info("Stream all jobs");
-    RecordSetList<JsonElement> rs = new RecordSetList<>();
-    try {
-      //_currentReader.ready() will be false when there is nothing in _currentReader to be read
-      if (_currentReader == null || !_currentReader.ready()) {
-        if (_currentFileIndex >= fileList.size()) {
-          log.info("Job is finished");
-          _jobFinished = true;
-          return rs;
-        }
-
-        String fileId = fileList.get(_currentFileIndex);
-        log.debug("Current file Id:" + fileId);
-        _currentReader = _client.getFileBufferedReader(fileId);
-        _currentFileIndex++;
-      }
-
-      InputStreamCSVReader reader = new InputStreamCSVReader(_currentReader);
-
-      if (_header == null) {
-        _header = ZuoraUtil.getHeader(reader.nextRecord());
-        if (StringUtils.isBlank(workUnitState.getProp(ConfigurationKeys.SOURCE_SCHEMA))) {
-          List<String> timeStampColumns = Lists.newArrayList();
-          String timeStampColumnString = workUnitState.getProp(ZuoraConfigurationKeys.ZUORA_TIMESTAMP_COLUMNS);
-          if (StringUtils.isNotBlank(timeStampColumnString)) {
-            timeStampColumns = Arrays.asList(timeStampColumnString.toLowerCase().replaceAll(" ", "").split(","));
-          }
-          setSchema(_header, timeStampColumns);
-        }
-        log.info("record header:" + _header);
-      }
-
-      List<String> csvRecord;
-      int recordCount = 0;
-      while ((csvRecord = reader.nextRecord()) != null) {
-        rs.add(Utils.csvToJsonObject(_header, csvRecord, _header.size()));
-        _totalRecords++;
-        recordCount++;
-        if (recordCount >= _batchSize) {
-          log.debug("Number of records in batch: " + recordCount);
-          break;
-        }
-      }
-    } catch (Exception e) {
-      throw new DataRecordException("Failed to get records from Zuora: " + e.getMessage(), e);
-    }
-
-    return rs;
   }
 
   @Override
@@ -219,7 +158,7 @@ public class ZuoraExtractor extends BasicRestApiExtractor {
     if (count != 0) {
       return count;
     }
-    return _totalRecords;
+    return _fileStreamer.getTotalRecords();
   }
 
   @Override
@@ -240,7 +179,7 @@ public class ZuoraExtractor extends BasicRestApiExtractor {
     } else {
       rs = getData(null);
     }
-    log.info("Total number of records downloaded: " + _totalRecords);
+    log.info("Total number of records downloaded: " + _fileStreamer.getTotalRecords());
     return rs;
   }
 
@@ -353,19 +292,32 @@ public class ZuoraExtractor extends BasicRestApiExtractor {
     return null;
   }
 
+  public List<String> extractHeader(ArrayList<String> firstLine) {
+    List<String> header = ZuoraUtil.getHeader(firstLine);
+    if (StringUtils.isBlank(workUnitState.getProp(ConfigurationKeys.SOURCE_SCHEMA))) {
+      List<String> timeStampColumns = Lists.newArrayList();
+      String timeStampColumnString = workUnitState.getProp(ZuoraConfigurationKeys.ZUORA_TIMESTAMP_COLUMNS);
+      if (StringUtils.isNotBlank(timeStampColumnString)) {
+        timeStampColumns = Arrays.asList(timeStampColumnString.toLowerCase().replaceAll(" ", "").split(","));
+      }
+      setSchema(header, timeStampColumns);
+    }
+    log.info("record header:" + header);
+    return header;
+  }
+
   private void setSchema(List<String> cols, List<String> timestampColumns) {
     JsonArray columnArray = new JsonArray();
     for (String columnName : cols) {
       Schema obj = new Schema();
       obj.setColumnName(columnName);
       obj.setComment("resolved");
-      obj.setWaterMark(
-          this.isWatermarkColumn(workUnit.getProp(ConfigurationKeys.EXTRACT_DELTA_FIELDS_KEY), columnName));
+      obj.setWaterMark(isWatermarkColumn(workUnit.getProp(ConfigurationKeys.EXTRACT_DELTA_FIELDS_KEY), columnName));
 
-      if (this.isWatermarkColumn(workUnit.getProp(ConfigurationKeys.EXTRACT_DELTA_FIELDS_KEY), columnName)) {
+      if (isWatermarkColumn(workUnit.getProp(ConfigurationKeys.EXTRACT_DELTA_FIELDS_KEY), columnName)) {
         obj.setNullable(false);
         obj.setDataType(convertDataType(columnName, "timestamp", null, null));
-      } else if (this.getPrimarykeyIndex(workUnit.getProp(ConfigurationKeys.EXTRACT_PRIMARY_KEY_FIELDS_KEY), columnName)
+      } else if (getPrimarykeyIndex(workUnit.getProp(ConfigurationKeys.EXTRACT_PRIMARY_KEY_FIELDS_KEY), columnName)
           == 0) {
         // set all columns as nullable except primary key and watermark columns
         obj.setNullable(true);
@@ -376,7 +328,7 @@ public class ZuoraExtractor extends BasicRestApiExtractor {
       }
 
       obj.setPrimaryKey(
-          this.getPrimarykeyIndex(workUnit.getProp(ConfigurationKeys.EXTRACT_PRIMARY_KEY_FIELDS_KEY), columnName));
+          getPrimarykeyIndex(workUnit.getProp(ConfigurationKeys.EXTRACT_PRIMARY_KEY_FIELDS_KEY), columnName));
 
       String jsonStr = gson.toJson(obj);
       JsonObject jsonObject = gson.fromJson(jsonStr, JsonObject.class).getAsJsonObject();
