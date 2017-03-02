@@ -55,7 +55,7 @@ public class ZuoraExtractor extends BasicRestApiExtractor {
 
   public ZuoraExtractor(WorkUnitState workUnitState) {
     super(workUnitState);
-    _client = new ZuoraClient(workUnitState);
+    _client = new ZuoraClientImpl(workUnitState);
     _batchSize = workUnitState
         .getPropAsInt(ConfigurationKeys.SOURCE_QUERYBASED_FETCH_SIZE, ConfigurationKeys.DEFAULT_SOURCE_FETCH_SIZE);
   }
@@ -66,7 +66,7 @@ public class ZuoraExtractor extends BasicRestApiExtractor {
     try {
       List<String> fileIds = null;
       if (response != null) {
-        String jobId = _client.getJobId(response);
+        String jobId = ZuoraClientImpl.getJobId(response);
         fileIds = _client.getFileIds(jobId);
       }
 
@@ -102,7 +102,7 @@ public class ZuoraExtractor extends BasicRestApiExtractor {
         _currentFileIndex++;
       }
 
-      InputStreamCSVReader reader = new InputStreamCSVReader(this._currentReader);
+      InputStreamCSVReader reader = new InputStreamCSVReader(_currentReader);
 
       if (_header == null) {
         _header = ZuoraUtil.getHeader(reader.nextRecord());
@@ -145,7 +145,7 @@ public class ZuoraExtractor extends BasicRestApiExtractor {
       List<Command> cmds = this.getSchemaMetadata(schema, entity);
       CommandOutput<?, ?> response = null;
       if (cmds != null) {
-        response = _client.executeGetRequest(cmds);
+        response = _client.executeGetRequest(cmds.get(0));
       }
       array = this.getSchema(response);
       if (array == null) {
@@ -192,7 +192,7 @@ public class ZuoraExtractor extends BasicRestApiExtractor {
     long CalculatedHighWatermark;
     try {
       List<Command> cmds = getHighWatermarkMetadata(schema, entity, watermarkColumn, snapshotPredicateList);
-      CommandOutput<RestApiCommand, String> response = _client.executeRequest(cmds);
+      CommandOutput<RestApiCommand, String> response = executeRequest(cmds);
       CalculatedHighWatermark = this.getHighWatermark(response, watermarkColumn, watermarkSourceFormat);
     } catch (Exception e) {
       throw new HighWatermarkException("Failed to get high watermark using rest api; error - " + e.getMessage(), e);
@@ -211,7 +211,7 @@ public class ZuoraExtractor extends BasicRestApiExtractor {
     long count;
     try {
       List<Command> cmds = getCountMetadata(schema, entity, workUnit, predicateList);
-      CommandOutput<RestApiCommand, String> response = _client.executeRequest(cmds);
+      CommandOutput<RestApiCommand, String> response = executeRequest(cmds);
       count = getCount(response);
     } catch (Exception e) {
       throw new RecordCountException("Failed to get record count using rest api; error - " + e.getMessage(), e);
@@ -234,7 +234,7 @@ public class ZuoraExtractor extends BasicRestApiExtractor {
     Iterator<JsonElement> rs;
     if (_firstRun) {
       List<Command> cmds = this.getDataMetadata(schema, entity, workUnit, predicateList);
-      CommandOutput<?, ?> response = _client.executePostRequest(cmds);
+      CommandOutput<?, ?> response = _client.executePostRequest(cmds.get(0));
       rs = getData(response);
       _firstRun = false;
     } else {
@@ -385,6 +385,28 @@ public class ZuoraExtractor extends BasicRestApiExtractor {
 
     log.info("Resolved Schema:" + columnArray);
     this.setOutputSchema(columnArray);
+  }
+
+  private CommandOutput<RestApiCommand, String> executeRequest(List<Command> cmds)
+      throws Exception {
+    if (cmds == null || cmds.isEmpty()) {
+      return null;
+    }
+    Command cmd = cmds.get(0);
+    RestApiCommand.RestApiCommandType commandType = (RestApiCommand.RestApiCommandType) cmd.getCommandType();
+    CommandOutput<RestApiCommand, String> output = null;
+    switch (commandType) {
+      case GET:
+        output = _client.executeGetRequest(cmd);
+        break;
+      case POST:
+        output = _client.executePostRequest(cmd);
+        break;
+      default:
+        log.error("Invalid REST API command type " + commandType);
+        break;
+    }
+    return output;
   }
 
   private JsonArray getDefaultSchema() {
