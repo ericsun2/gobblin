@@ -187,7 +187,7 @@ public class ZuoraExtractor extends BasicRestApiExtractor {
       int recordCount = 0;
       while ((csvRecord = reader.nextRecord()) != null) {
         rs.add(Utils.csvToJsonObject(_header, csvRecord, _header.size()));
-        processedRecordCount++;
+        totalRecordDownloaded++;
         recordCount++;
         if (recordCount >= _batchSize) {
           log.debug("Number of records in batch: " + recordCount);

@@ -11,11 +11,17 @@ import java.net.URL;
 import java.util.Arrays;
 import java.util.Iterator;
 import java.util.List;
+import java.util.concurrent.Callable;
+import java.util.concurrent.TimeUnit;
 import java.util.zip.GZIPInputStream;
 
 import org.apache.commons.codec.binary.Base64;
 import org.apache.commons.lang.StringUtils;
 
+import com.github.rholder.retry.Retryer;
+import com.github.rholder.retry.RetryerBuilder;
+import com.github.rholder.retry.StopStrategies;
+import com.github.rholder.retry.WaitStrategies;
 import com.google.gson.Gson;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
@@ -44,23 +50,20 @@ import gobblin.source.workunit.WorkUnit;
 @Slf4j
 public abstract class BasicRestApiExtractor extends QueryBasedExtractor<JsonArray, JsonElement> implements SourceSpecificLayer<JsonArray, JsonElement>, RestApiSpecificLayer {
   protected static final Gson gson = new Gson();
-  protected long processedRecordCount = 0;
+  protected long totalRecordDownloaded = 0;
   private boolean _firstRun = true;
 
-  public long getProcessedRecordCount() {
-    return processedRecordCount;
-  }
-
-  public void setProcessedRecordCount(long processedRecordCount) {
-    this.processedRecordCount = processedRecordCount;
-  }
-
-  public boolean getPullStatus() {
-    return true;
-  }
+  private final Retryer<CommandOutput<RestApiCommand, String>> _retryer;
 
   public BasicRestApiExtractor(WorkUnitState workUnitState) {
     super(workUnitState);
+    _retryer =
+        RetryerBuilder.<CommandOutput<RestApiCommand, String>>newBuilder().retryIfExceptionOfType(IOException.class)
+            .withStopStrategy(StopStrategies
+                .stopAfterAttempt(workUnitState.getPropAsInt(RestAPIConfigurationKeys.REST_API_RETRY_LIMIT, 3)))
+            .withWaitStrategy(WaitStrategies
+                .fixedWait(workUnitState.getPropAsInt(RestAPIConfigurationKeys.REST_API_RETRY_WAIT_TIME_MILLIS, 10000),
+                    TimeUnit.MILLISECONDS)).build();
   }
 
   @Override
@@ -148,33 +151,29 @@ public abstract class BasicRestApiExtractor extends QueryBasedExtractor<JsonArra
     if (count != 0) {
       return count;
     }
-    return this.getProcessedRecordCount();
+    return totalRecordDownloaded;
   }
 
   @Override
   public Iterator<JsonElement> getRecordSet(String schema, String entity, WorkUnit workUnit,
       List<Predicate> predicateList)
       throws DataRecordException, IOException {
-    Iterator<JsonElement> rs;
-    CommandOutput<?, ?> response = null;
-    try {
-      if (!this.getPullStatus()) {
-        log.info("pull status false");
-        return null;
-      } else {
-        if (_firstRun) {
-          List<Command> cmds = this.getDataMetadata(schema, entity, workUnit, predicateList);
-          response = this.executePostRequest(cmds);
-        }
-        rs = this.getData(response);
-        log.info("Total number of records processed - " + this.processedRecordCount);
-        _firstRun = false;
-      }
-      return rs;
-    } catch (Exception e) {
-      e.printStackTrace();
-      throw new DataRecordException("Failed to get records using rest API; error - " + e.getMessage(), e);
+    if (!this.getPullStatus()) {
+      log.info("pull status false");
+      return null;
     }
+
+    Iterator<JsonElement> rs;
+    if (_firstRun) {
+      List<Command> cmds = this.getDataMetadata(schema, entity, workUnit, predicateList);
+      CommandOutput<?, ?> response = this.executePostRequest(cmds);
+      rs = getData(response);
+      _firstRun = false;
+    } else {
+      rs = getData(null);
+    }
+    log.info("Total number of records downloaded: " + this.totalRecordDownloaded);
+    return rs;
   }
 
   protected CommandOutput<?, ?> executeRequest(List<Command> cmds)
@@ -250,59 +249,56 @@ public abstract class BasicRestApiExtractor extends QueryBasedExtractor<JsonArra
     return false;
   }
 
-  private CommandOutput<?, ?> executePostRequest(List<Command> cmds)
-      throws Exception {
-    HttpsURLConnection connection = null;
-    List<String> params = cmds.get(0).getParams();
+  private CommandOutput<?, ?> executePostRequest(final List<Command> cmds)
+      throws DataRecordException {
+    final Command command = cmds.get(0);
+    try {
+      return _retryer.call(new Callable<CommandOutput<RestApiCommand, String>>() {
+        @Override
+        public CommandOutput<RestApiCommand, String> call()
+            throws Exception {
+          return getRestApiCommandStringCommandOutput(command);
+        }
+      });
+    } catch (Exception e) {
+      throw new DataRecordException("Post request failed for command: " + command.toString(), e);
+    }
+  }
 
-    CommandOutput<RestApiCommand, String> output = new RestApiCommandOutput();
-    int retryLimit = this.workUnitState.getPropAsInt(RestAPIConfigurationKeys.REST_API_RETRY_LIMIT, 3);
-    int retryCount = 1;
-    boolean isFinished = false;
+  private CommandOutput<RestApiCommand, String> getRestApiCommandStringCommandOutput(Command command)
+      throws IOException {
+    List<String> params = command.getParams();
+    String payLoad = params.get(1);
+    log.info("payLoad:" + payLoad);
+
     BufferedReader br = null;
-    while (retryCount <= retryLimit && !isFinished) {
-      try {
-        String payLoad = params.get(1);
-        log.info("payLoad:" + payLoad);
+    HttpsURLConnection connection = null;
+    try {
+      connection = getConnection(params.get(0), workUnitState);
+      connection.setDoOutput(true);
+      connection.setRequestMethod("POST");
 
-        connection = getConnection(params.get(0), workUnitState);
-        connection.setDoOutput(true);
-        connection.setRequestMethod("POST");
+      OutputStream os = connection.getOutputStream();
+      os.write(payLoad.getBytes());
+      os.flush();
 
-        OutputStream os = connection.getOutputStream();
-        os.write(payLoad.getBytes());
-        os.flush();
-
-        br = new BufferedReader(new InputStreamReader(connection.getInputStream(), "UTF-8"));
-        StringBuffer result = new StringBuffer();
-        String line = "";
-        while ((line = br.readLine()) != null) {
-          result.append(line);
-        }
-        output.put((RestApiCommand) cmds.get(0), result.toString());
-        isFinished = true;
-      } catch (RuntimeException e) {
-        throw e;
-      } catch (Exception e) {
-        e.printStackTrace();
-        log.warn("Retrying request to extract data; error - " + e.getMessage());
-        retryCount++;
-        Thread.sleep(this.workUnitState.getPropAsInt(RestAPIConfigurationKeys.REST_API_RETRY_WAIT_TIME_MILLIS, 10000));
-      } finally {
-        if (br != null) {
-          br.close();
-        }
-        if (connection != null) {
-          connection.disconnect();
-        }
+      br = new BufferedReader(new InputStreamReader(connection.getInputStream(), "UTF-8"));
+      StringBuilder result = new StringBuilder();
+      String line;
+      while ((line = br.readLine()) != null) {
+        result.append(line);
+      }
+      CommandOutput<RestApiCommand, String> output = new RestApiCommandOutput();
+      output.put((RestApiCommand) command, result.toString());
+      return output;
+    } finally {
+      if (br != null) {
+        br.close();
+      }
+      if (connection != null) {
+        connection.disconnect();
       }
     }
-
-    if (retryCount >= retryLimit) {
-      log.error("Failed to extract data after " + retryLimit + " attempts");
-    }
-
-    return output;
   }
 
   private String getStringFromInputStream(InputStream is) {
@@ -470,5 +466,9 @@ public abstract class BasicRestApiExtractor extends QueryBasedExtractor<JsonArra
 
     connection.setConnectTimeout(workUnitState.getPropAsInt(ConfigurationKeys.SOURCE_CONN_TIMEOUT, 30000));
     return connection;
+  }
+
+  public boolean getPullStatus() {
+    return true;
   }
 }
