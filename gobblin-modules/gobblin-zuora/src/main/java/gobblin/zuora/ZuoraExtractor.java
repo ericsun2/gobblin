@@ -2,10 +2,7 @@ package gobblin.zuora;
 
 import java.io.BufferedReader;
 import java.io.IOException;
-import java.io.InputStreamReader;
-import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
@@ -30,12 +27,10 @@ import gobblin.source.extractor.exception.RestApiConnectionException;
 import gobblin.source.extractor.exception.SchemaException;
 import gobblin.source.extractor.extract.Command;
 import gobblin.source.extractor.extract.CommandOutput;
-import gobblin.source.extractor.extract.jdbc.SqlQueryUtils;
-import gobblin.source.extractor.extract.restapi.BasicRestApiExtractor;
 import gobblin.source.extractor.extract.restapi.RestApiCommand;
-import gobblin.source.extractor.extract.restapi.RestApiCommand.RestApiCommandType;
 import gobblin.source.extractor.resultset.RecordSet;
 import gobblin.source.extractor.resultset.RecordSetList;
+import gobblin.source.extractor.schema.Schema;
 import gobblin.source.extractor.utils.InputStreamCSVReader;
 import gobblin.source.extractor.utils.Utils;
 import gobblin.source.extractor.watermark.Predicate;
@@ -48,16 +43,205 @@ public class ZuoraExtractor extends BasicRestApiExtractor {
   private static final String TIMESTAMP_FORMAT = "yyyy-MM-dd'T'HH:mm:ss";
   private static final String DATE_FORMAT = "yyyy-MM-dd";
   private static final String HOUR_FORMAT = "HH";
-  private final int _batchSize;
+  private final ZuoraClient _client;
+  private boolean _firstRun = true;
+
   private BufferedReader _currentReader;
   private int _currentFileIndex = 0;
   private List<String> _header = null;
   private boolean _jobFinished = false;
+  private final int _batchSize;
+  private long _totalRecords = 0;
 
   public ZuoraExtractor(WorkUnitState workUnitState) {
     super(workUnitState);
-    _batchSize = workUnit
+    _client = new ZuoraClient(workUnitState);
+    _batchSize = workUnitState
         .getPropAsInt(ConfigurationKeys.SOURCE_QUERYBASED_FETCH_SIZE, ConfigurationKeys.DEFAULT_SOURCE_FETCH_SIZE);
+  }
+
+  @Override
+  public Iterator<JsonElement> getData(CommandOutput<?, ?> response)
+      throws DataRecordException, IOException {
+    try {
+      List<String> fileIds = null;
+      if (response != null) {
+        String jobId = _client.getJobId(response);
+        fileIds = _client.getFileIds(jobId);
+      }
+
+      RecordSet<JsonElement> rs = null;
+      if (!_jobFinished) {
+        rs = streamFiles(fileIds);
+      }
+      if (rs == null) {
+        return null;
+      }
+      return rs.iterator();
+    } catch (Exception e) {
+      throw new DataRecordException("Failed to get records from RightNowCloud; error - " + e.getMessage(), e);
+    }
+  }
+
+  private RecordSet<JsonElement> streamFiles(List<String> fileList)
+      throws DataRecordException {
+    log.info("Stream all jobs");
+    RecordSetList<JsonElement> rs = new RecordSetList<>();
+    try {
+      //_currentReader.ready() will be false when there is nothing in _currentReader to be read
+      if (_currentReader == null || !_currentReader.ready()) {
+        if (_currentFileIndex >= fileList.size()) {
+          log.info("Job is finished");
+          _jobFinished = true;
+          return rs;
+        }
+
+        String fileId = fileList.get(_currentFileIndex);
+        log.debug("Current file Id:" + fileId);
+        _currentReader = _client.getFileBufferedReader(fileId);
+        _currentFileIndex++;
+      }
+
+      InputStreamCSVReader reader = new InputStreamCSVReader(this._currentReader);
+
+      if (_header == null) {
+        _header = ZuoraUtil.getHeader(reader.nextRecord());
+        if (StringUtils.isBlank(workUnitState.getProp(ConfigurationKeys.SOURCE_SCHEMA))) {
+          List<String> timeStampColumns = Lists.newArrayList();
+          String timeStampColumnString = workUnitState.getProp(ZuoraConfigurationKeys.ZUORA_TIMESTAMP_COLUMNS);
+          if (StringUtils.isNotBlank(timeStampColumnString)) {
+            timeStampColumns = Arrays.asList(timeStampColumnString.toLowerCase().replaceAll(" ", "").split(","));
+          }
+          setSchema(_header, timeStampColumns);
+        }
+        log.info("record header:" + _header);
+      }
+
+      List<String> csvRecord;
+      int recordCount = 0;
+      while ((csvRecord = reader.nextRecord()) != null) {
+        rs.add(Utils.csvToJsonObject(_header, csvRecord, _header.size()));
+        _totalRecords++;
+        recordCount++;
+        if (recordCount >= _batchSize) {
+          log.debug("Number of records in batch: " + recordCount);
+          break;
+        }
+      }
+    } catch (Exception e) {
+      throw new DataRecordException("Failed to get records from Zuora: " + e.getMessage(), e);
+    }
+
+    return rs;
+  }
+
+  @Override
+  public void extractMetadata(String schema, String entity, WorkUnit workUnit)
+      throws SchemaException, IOException {
+    log.info("Extract Metadata using REST Api");
+    JsonArray columnArray = new JsonArray();
+    JsonArray array;
+    try {
+      List<Command> cmds = this.getSchemaMetadata(schema, entity);
+      CommandOutput<?, ?> response = null;
+      if (cmds != null) {
+        response = _client.executeGetRequest(cmds);
+      }
+      array = this.getSchema(response);
+      if (array == null) {
+        log.warn("Schema not found in metadata and configurations");
+        columnArray = getDefaultSchema();
+      } else {
+        for (JsonElement columnElement : array) {
+          Schema obj = gson.fromJson(columnElement, Schema.class);
+          String columnName = obj.getColumnName();
+
+          obj.setWaterMark(
+              this.isWatermarkColumn(workUnit.getProp(ConfigurationKeys.EXTRACT_DELTA_FIELDS_KEY), columnName));
+
+          if (this.isWatermarkColumn(workUnit.getProp(ConfigurationKeys.EXTRACT_DELTA_FIELDS_KEY), columnName)) {
+            obj.setNullable(false);
+          } else if (
+              this.getPrimarykeyIndex(workUnit.getProp(ConfigurationKeys.EXTRACT_PRIMARY_KEY_FIELDS_KEY), columnName)
+                  == 0) {
+            // set all columns as nullable except primary key and watermark columns
+            obj.setNullable(true);
+          }
+
+          obj.setPrimaryKey(
+              this.getPrimarykeyIndex(workUnit.getProp(ConfigurationKeys.EXTRACT_PRIMARY_KEY_FIELDS_KEY), columnName));
+
+          String jsonStr = gson.toJson(obj);
+          JsonObject jsonObject = gson.fromJson(jsonStr, JsonObject.class).getAsJsonObject();
+          columnArray.add(jsonObject);
+        }
+      }
+
+      log.info("Schema:" + columnArray);
+      this.setOutputSchema(columnArray);
+    } catch (Exception e) {
+      throw new SchemaException("Failed to get schema using rest api; error - " + e.getMessage(), e);
+    }
+  }
+
+  @Override
+  public long getMaxWatermark(String schema, String entity, String watermarkColumn,
+      List<Predicate> snapshotPredicateList, String watermarkSourceFormat)
+      throws HighWatermarkException {
+    log.debug("Get high watermark using Rest Api");
+    long CalculatedHighWatermark;
+    try {
+      List<Command> cmds = getHighWatermarkMetadata(schema, entity, watermarkColumn, snapshotPredicateList);
+      CommandOutput<RestApiCommand, String> response = _client.executeRequest(cmds);
+      CalculatedHighWatermark = this.getHighWatermark(response, watermarkColumn, watermarkSourceFormat);
+    } catch (Exception e) {
+      throw new HighWatermarkException("Failed to get high watermark using rest api; error - " + e.getMessage(), e);
+    }
+
+    if (CalculatedHighWatermark != -1) {
+      return CalculatedHighWatermark;
+    }
+    return this.workUnit.getHighWaterMark();
+  }
+
+  @Override
+  public long getSourceCount(String schema, String entity, WorkUnit workUnit, List<Predicate> predicateList)
+      throws RecordCountException {
+    log.debug("Get source record count using Rest Api");
+    long count;
+    try {
+      List<Command> cmds = getCountMetadata(schema, entity, workUnit, predicateList);
+      CommandOutput<RestApiCommand, String> response = _client.executeRequest(cmds);
+      count = getCount(response);
+    } catch (Exception e) {
+      throw new RecordCountException("Failed to get record count using rest api; error - " + e.getMessage(), e);
+    }
+    if (count != 0) {
+      return count;
+    }
+    return _totalRecords;
+  }
+
+  @Override
+  public Iterator<JsonElement> getRecordSet(String schema, String entity, WorkUnit workUnit,
+      List<Predicate> predicateList)
+      throws DataRecordException, IOException {
+    if (!this.getPullStatus()) {
+      log.info("pull status false");
+      return null;
+    }
+
+    Iterator<JsonElement> rs;
+    if (_firstRun) {
+      List<Command> cmds = this.getDataMetadata(schema, entity, workUnit, predicateList);
+      CommandOutput<?, ?> response = _client.executePostRequest(cmds);
+      rs = getData(response);
+      _firstRun = false;
+    } else {
+      rs = getData(null);
+    }
+    log.info("Total number of records downloaded: " + _totalRecords);
+    return rs;
   }
 
   @Override
@@ -81,157 +265,10 @@ public class ZuoraExtractor extends BasicRestApiExtractor {
   public List<Command> getDataMetadata(String schema, String entity, WorkUnit workUnit, List<Predicate> predicateList)
       throws DataRecordException {
     try {
-      String host = getEndPoint("batch-query/");
-      List<String> params = Lists.newLinkedList();
-      params.add(host);
-
-      String query = workUnitState.getProp(ConfigurationKeys.SOURCE_QUERYBASED_QUERY,
-          "SELECT * FROM " + workUnitState.getProp(ConfigurationKeys.SOURCE_ENTITY));
-
-      if (predicateList != null) {
-        for (Predicate predicate : predicateList) {
-          query = SqlQueryUtils.addPredicate(query, predicate.getCondition());
-        }
-      }
-
-      String rowLimit = workUnitState.getProp(ZuoraConfigurationKeys.ZUORA_ROW_LIMIT);
-      if (StringUtils.isNotBlank(rowLimit)) {
-        query += " LIMIT " + rowLimit;
-      }
-
-      List<ZuoraQuery> queries = Lists.newArrayList();
-      queries.add(new ZuoraQuery(workUnitState.getProp(ConfigurationKeys.JOB_NAME_KEY), query));
-      ZuoraParams filterPayload = new ZuoraParams(workUnitState.getProp(ZuoraConfigurationKeys.ZUORA_PARTNER, "sample"),
-          workUnitState.getProp(ZuoraConfigurationKeys.ZUORA_PROJECT, "sample"), queries,
-          workUnitState.getProp(ZuoraConfigurationKeys.ZUORA_API_NAME, "sample"),
-          workUnitState.getProp(ZuoraConfigurationKeys.ZUORA_OUTPUT_FORMAT, "csv"),
-          workUnitState.getProp(ConfigurationKeys.SOURCE_CONN_VERSION, "1.1"));
-      params.add(gson.toJson(filterPayload));
-      return Collections.singletonList(new RestApiCommand().build(params, RestApiCommandType.POST));
+      return _client.buildPostCommand(predicateList);
     } catch (Exception e) {
       throw new DataRecordException("Failed to get RightNowCloud url for data records; error - " + e.getMessage(), e);
     }
-  }
-
-  @Override
-  public Iterator<JsonElement> getData(CommandOutput<?, ?> response)
-      throws DataRecordException, IOException {
-    try {
-      List<String> _fileList = null;
-      if (response != null) {
-        Iterator<String> itr = (Iterator<String>) response.getResults().values().iterator();
-        if (!itr.hasNext()) {
-          throw new DataRecordException("Failed to get data from RightNowCloud; REST response has no output");
-        }
-
-        String stringResponse = itr.next();
-        log.info("Batch query result: " + stringResponse);
-        JsonObject jsonObject = gson.fromJson(stringResponse, JsonObject.class).getAsJsonObject();
-        String jobId = jsonObject.get("id").getAsString();
-        _fileList = getFiles(jobId);
-      }
-
-      RecordSet<JsonElement> rs = null;
-      if (!_jobFinished) {
-        rs = streamFiles(_fileList);
-      }
-      if (rs == null) {
-        return null;
-      }
-      return rs.iterator();
-    } catch (Exception e) {
-      throw new DataRecordException("Failed to get records from RightNowCloud; error - " + e.getMessage(), e);
-    }
-  }
-
-  /**
-   * Stream all files to extract resultSet
-   * @return record set with each record as a JsonObject
-   */
-  private RecordSet<JsonElement> streamFiles(List<String> fileList)
-      throws DataRecordException {
-    log.info("Stream all jobs");
-    RecordSetList<JsonElement> rs = new RecordSetList<>();
-    try {
-      //_currentReader.ready() will be false when there is nothing in _currentReader to be read
-      if (_currentReader == null || !_currentReader.ready()) {
-        if (_currentFileIndex >= fileList.size()) {
-          log.info("Job is finished");
-          _jobFinished = true;
-          return rs;
-        }
-
-        String fileId = fileList.get(_currentFileIndex);
-        log.debug("Current file Id:" + fileId);
-        _currentReader =
-            new BufferedReader(new InputStreamReader(this.getRequestAsStream(getEndPoint("file/" + fileId))));
-        _currentFileIndex++;
-      }
-
-      InputStreamCSVReader reader = new InputStreamCSVReader(this._currentReader);
-
-      if (_header == null) {
-        _header = getHeader(reader.nextRecord());
-        if (StringUtils.isBlank(workUnit.getProp(ConfigurationKeys.SOURCE_SCHEMA))) {
-          List<String> timeStampColumns = Lists.newArrayList();
-          String timeStampColumnString = this.workUnit.getProp(ZuoraConfigurationKeys.ZUORA_TIMESTAMP_COLUMNS);
-          if (StringUtils.isNotBlank(timeStampColumnString)) {
-            timeStampColumns = Arrays.asList(timeStampColumnString.toLowerCase().replaceAll(" ", "").split(","));
-          }
-          setSchema(_header, timeStampColumns);
-        }
-        log.info("record header:" + _header);
-      }
-
-      List<String> csvRecord;
-      int recordCount = 0;
-      while ((csvRecord = reader.nextRecord()) != null) {
-        rs.add(Utils.csvToJsonObject(_header, csvRecord, _header.size()));
-        totalRecordDownloaded++;
-        recordCount++;
-        if (recordCount >= _batchSize) {
-          log.debug("Number of records in batch: " + recordCount);
-          break;
-        }
-      }
-    } catch (Exception e) {
-      throw new DataRecordException("Failed to get records from Zuora: " + e.getMessage(), e);
-    }
-
-    return rs;
-  }
-
-  private List<String> getFiles(String jobId)
-      throws Exception {
-    log.info("Get files for job " + jobId);
-    String url = getEndPoint("batch-query/jobs/" + jobId);
-    Command cmd = new RestApiCommand().build(Collections.singleton(url), RestApiCommandType.GET);
-
-    String status = "pending";
-    JsonObject jsonObject = null;
-    while (!status.equals("completed")) {
-      CommandOutput<?, ?> response = this.executeRequest(Collections.singletonList(cmd));
-      Iterator<String> itr = (Iterator<String>) response.getResults().values().iterator();
-      if (!itr.hasNext()) {
-        throw new DataRecordException("Failed to get data from RightNowCloud; REST response has no output");
-      }
-      String output = itr.next();
-      log.info("Job " + jobId + " output: " + output);
-
-      jsonObject = gson.fromJson(output, JsonObject.class).getAsJsonObject();
-      status = jsonObject.get("status").getAsString();
-      if (!status.equals("completed")) {
-        log.info("Waiting for job to complete");
-        Thread.sleep(5000);
-      }
-    }
-
-    List<String> fileIds = Lists.newArrayList();
-    for (JsonElement jsonObj : jsonObject.get("batches").getAsJsonArray()) {
-      fileIds.add(jsonObj.getAsJsonObject().get("fileId").getAsString());
-    }
-    log.info("Files:" + fileIds);
-    return fileIds;
   }
 
   @Override
@@ -316,22 +353,70 @@ public class ZuoraExtractor extends BasicRestApiExtractor {
     return null;
   }
 
-  private String getEndPoint(String relativeUrl) {
-    return workUnitState.getProp(ConfigurationKeys.SOURCE_CONN_HOST_NAME) + relativeUrl;
+  private void setSchema(List<String> cols, List<String> timestampColumns) {
+    JsonArray columnArray = new JsonArray();
+    for (String columnName : cols) {
+      Schema obj = new Schema();
+      obj.setColumnName(columnName);
+      obj.setComment("resolved");
+      obj.setWaterMark(
+          this.isWatermarkColumn(workUnit.getProp(ConfigurationKeys.EXTRACT_DELTA_FIELDS_KEY), columnName));
+
+      if (this.isWatermarkColumn(workUnit.getProp(ConfigurationKeys.EXTRACT_DELTA_FIELDS_KEY), columnName)) {
+        obj.setNullable(false);
+        obj.setDataType(convertDataType(columnName, "timestamp", null, null));
+      } else if (this.getPrimarykeyIndex(workUnit.getProp(ConfigurationKeys.EXTRACT_PRIMARY_KEY_FIELDS_KEY), columnName)
+          == 0) {
+        // set all columns as nullable except primary key and watermark columns
+        obj.setNullable(true);
+      }
+
+      if (timestampColumns != null && timestampColumns.contains(columnName.toLowerCase())) {
+        obj.setDataType(convertDataType(columnName, "timestamp", null, null));
+      }
+
+      obj.setPrimaryKey(
+          this.getPrimarykeyIndex(workUnit.getProp(ConfigurationKeys.EXTRACT_PRIMARY_KEY_FIELDS_KEY), columnName));
+
+      String jsonStr = gson.toJson(obj);
+      JsonObject jsonObject = gson.fromJson(jsonStr, JsonObject.class).getAsJsonObject();
+      columnArray.add(jsonObject);
+    }
+
+    log.info("Resolved Schema:" + columnArray);
+    this.setOutputSchema(columnArray);
   }
 
-  private static List<String> getHeader(ArrayList<String> cols) {
-    List<String> columns = Lists.newArrayList();
-    for (String col : cols) {
-      String[] colRefs = col.split(":");
-      String columnName;
-      if (colRefs.length >= 2) {
-        columnName = colRefs[1];
-      } else {
-        columnName = colRefs[0];
+  private JsonArray getDefaultSchema() {
+    JsonArray columnArray = new JsonArray();
+    String pk = workUnit.getProp(ConfigurationKeys.EXTRACT_PRIMARY_KEY_FIELDS_KEY);
+    if (StringUtils.isNotBlank(pk)) {
+      List<String> pkCols = Arrays.asList(pk.replaceAll(" ", "").split(","));
+      for (String col : pkCols) {
+        Schema obj = new Schema();
+        obj.setColumnName(col);
+        obj.setDataType(convertDataType(col, null, null, null));
+        obj.setComment("default");
+        String jsonStr = gson.toJson(obj);
+        JsonObject jsonObject = gson.fromJson(jsonStr, JsonObject.class).getAsJsonObject();
+        columnArray.add(jsonObject);
       }
-      columns.add(columnName.replaceAll(" ", "").trim());
     }
-    return columns;
+
+    String watermark = workUnit.getProp(ConfigurationKeys.EXTRACT_DELTA_FIELDS_KEY);
+    if (StringUtils.isNotBlank(watermark)) {
+      List<String> watermarkCols = Arrays.asList(watermark.replaceAll(" ", "").split(","));
+      for (String col : watermarkCols) {
+        Schema obj = new Schema();
+        obj.setColumnName(col);
+        obj.setDataType(convertDataType(col, null, null, null));
+        obj.setComment("default");
+        obj.setWaterMark(true);
+        String jsonStr = gson.toJson(obj);
+        JsonObject jsonObject = gson.fromJson(jsonStr, JsonObject.class).getAsJsonObject();
+        columnArray.add(jsonObject);
+      }
+    }
+    return columnArray;
   }
 }
