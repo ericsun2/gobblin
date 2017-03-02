@@ -117,7 +117,7 @@ class ZuoraClientImpl implements ZuoraClient {
 
   @Override
   public List<String> getFileIds(String jobId)
-      throws Exception {
+      throws DataRecordException, IOException {
     log.info("Getting files for job " + jobId);
     String url = getEndPoint("batch-query/jobs/" + jobId);
     Command cmd = new RestApiCommand().build(Collections.singleton(url), RestApiCommand.RestApiCommandType.GET);
@@ -127,7 +127,7 @@ class ZuoraClientImpl implements ZuoraClient {
       CommandOutput<RestApiCommand, String> response = executeGetRequest(cmd);
       Iterator<String> itr = response.getResults().values().iterator();
       if (!itr.hasNext()) {
-        throw new DataRecordException("Failed to get data from RightNowCloud; getFileId phase has no response.");
+        throw new DataRecordException("Failed to get file Ids based on job id " + jobId);
       }
       String output = itr.next();
       JsonObject jsonResp = gson.fromJson(output, JsonObject.class).getAsJsonObject();
@@ -141,14 +141,18 @@ class ZuoraClientImpl implements ZuoraClient {
         log.info("Get Files Response - FileIds: " + fileIds);
         return fileIds;
       }
-      Thread.sleep(5000);
+      try {
+        Thread.sleep(5000);
+      } catch (InterruptedException e) {
+        throw new IOException(e);
+      }
     }
     return null;
   }
 
   @Override
   public CommandOutput<RestApiCommand, String> executeGetRequest(final Command cmd)
-      throws Exception {
+      throws IOException {
     HttpsURLConnection connection = null;
     try {
       String urlPath = cmd.getParams().get(0);

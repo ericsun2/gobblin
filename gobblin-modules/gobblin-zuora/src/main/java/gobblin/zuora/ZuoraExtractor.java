@@ -12,6 +12,7 @@ import org.apache.http.HttpEntity;
 
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Lists;
+import com.google.gson.Gson;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
@@ -27,8 +28,10 @@ import gobblin.source.extractor.exception.RestApiConnectionException;
 import gobblin.source.extractor.exception.SchemaException;
 import gobblin.source.extractor.extract.Command;
 import gobblin.source.extractor.extract.CommandOutput;
+import gobblin.source.extractor.extract.QueryBasedExtractor;
+import gobblin.source.extractor.extract.SourceSpecificLayer;
 import gobblin.source.extractor.extract.restapi.RestApiCommand;
-import gobblin.source.extractor.resultset.RecordSet;
+import gobblin.source.extractor.extract.restapi.RestApiSpecificLayer;
 import gobblin.source.extractor.schema.Schema;
 import gobblin.source.extractor.utils.Utils;
 import gobblin.source.extractor.watermark.Predicate;
@@ -37,13 +40,14 @@ import gobblin.source.workunit.WorkUnit;
 
 
 @Slf4j
-public class ZuoraExtractor extends BasicRestApiExtractor {
+public class ZuoraExtractor extends QueryBasedExtractor<JsonArray, JsonElement> implements SourceSpecificLayer<JsonArray, JsonElement>, RestApiSpecificLayer {
+  private static final Gson gson = new Gson();
   private static final String TIMESTAMP_FORMAT = "yyyy-MM-dd'T'HH:mm:ss";
   private static final String DATE_FORMAT = "yyyy-MM-dd";
   private static final String HOUR_FORMAT = "HH";
   private final ZuoraClient _client;
   private final ZuoraClientFilesStreamer _fileStreamer;
-  private boolean _firstRun = true;
+  private List<String> _fileIds;
 
   public ZuoraExtractor(WorkUnitState workUnitState) {
     super(workUnitState);
@@ -52,26 +56,30 @@ public class ZuoraExtractor extends BasicRestApiExtractor {
   }
 
   @Override
-  public Iterator<JsonElement> getData(CommandOutput<?, ?> response)
+  public Iterator<JsonElement> getRecordSet(String schema, String entity, WorkUnit workUnit,
+      List<Predicate> predicateList)
       throws DataRecordException, IOException {
-    try {
-      List<String> fileIds = null;
-      if (response != null) {
-        String jobId = ZuoraClientImpl.getJobId(response);
-        fileIds = _client.getFileIds(jobId);
-      }
-
-      RecordSet<JsonElement> rs = null;
-      if (!_fileStreamer.isJobFinished()) {
-        rs = _fileStreamer.streamFiles(fileIds);
-      }
-      if (rs == null) {
-        return null;
-      }
-      return rs.iterator();
-    } catch (Exception e) {
-      throw new DataRecordException("Failed to get records from RightNowCloud; error - " + e.getMessage(), e);
+    if (!this.getPullStatus()) {
+      log.info("pull status false");
+      return null;
     }
+
+    if (_fileIds == null) {
+      List<Command> cmds = getDataMetadata(schema, entity, workUnit, predicateList);
+      CommandOutput<RestApiCommand, String> postResponse = _client.executePostRequest(cmds.get(0));
+      String jobId = ZuoraClientImpl.getJobId(postResponse);
+      _fileIds = _client.getFileIds(jobId);
+    }
+    return getData(null);
+  }
+
+  @Override
+  public Iterator<JsonElement> getData(CommandOutput<?, ?> postResp)
+      throws DataRecordException, IOException {
+    if (!_fileStreamer.isJobFinished()) {
+      return _fileStreamer.streamFiles(_fileIds).iterator();
+    }
+    return null;
   }
 
   @Override
@@ -159,28 +167,6 @@ public class ZuoraExtractor extends BasicRestApiExtractor {
       return count;
     }
     return _fileStreamer.getTotalRecords();
-  }
-
-  @Override
-  public Iterator<JsonElement> getRecordSet(String schema, String entity, WorkUnit workUnit,
-      List<Predicate> predicateList)
-      throws DataRecordException, IOException {
-    if (!this.getPullStatus()) {
-      log.info("pull status false");
-      return null;
-    }
-
-    Iterator<JsonElement> rs;
-    if (_firstRun) {
-      List<Command> cmds = this.getDataMetadata(schema, entity, workUnit, predicateList);
-      CommandOutput<?, ?> response = _client.executePostRequest(cmds.get(0));
-      rs = getData(response);
-      _firstRun = false;
-    } else {
-      rs = getData(null);
-    }
-    log.info("Total number of records downloaded: " + _fileStreamer.getTotalRecords());
-    return rs;
   }
 
   @Override
@@ -392,5 +378,26 @@ public class ZuoraExtractor extends BasicRestApiExtractor {
       }
     }
     return columnArray;
+  }
+
+  @Override
+  public void closeConnection()
+      throws Exception {
+  }
+
+  @Override
+  public Iterator<JsonElement> getRecordSetFromSourceApi(String schema, String entity, WorkUnit workUnit,
+      List<Predicate> predicateList)
+      throws IOException {
+    throw new RuntimeException("Not supported");
+  }
+
+  @Override
+  public void setTimeOut(int timeOut) {
+
+  }
+
+  public boolean getPullStatus() {
+    return true;
   }
 }

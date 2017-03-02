@@ -1,5 +1,6 @@
 package gobblin.zuora;
 
+import java.io.IOException;
 import java.util.List;
 
 import gobblin.source.extractor.DataRecordException;
@@ -17,7 +18,7 @@ public interface ZuoraClient {
       throws DataRecordException;
 
   List<String> getFileIds(String jobId)
-      throws Exception;
+      throws DataRecordException, IOException;
 
   CommandOutput<RestApiCommand, String> executeGetRequest(final Command cmd)
       throws Exception;

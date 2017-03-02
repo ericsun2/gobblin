@@ -79,6 +79,7 @@ public class ZuoraClientFilesStreamer {
           break;
         }
       }
+      log.info("Total number of records downloaded: " + _totalRecords);
       return rs;
     } catch (Exception e) {
       try {
