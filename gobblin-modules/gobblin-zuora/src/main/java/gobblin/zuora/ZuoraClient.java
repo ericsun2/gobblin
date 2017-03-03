@@ -17,7 +17,7 @@ public interface ZuoraClient {
   CommandOutput<RestApiCommand, String> executePostRequest(final Command command)
       throws DataRecordException;
 
-  List<String> getFileIds(String jobId)
+  List<String> getFileIds(final String jobId)
       throws DataRecordException, IOException;
 
   CommandOutput<RestApiCommand, String> executeGetRequest(final Command cmd)

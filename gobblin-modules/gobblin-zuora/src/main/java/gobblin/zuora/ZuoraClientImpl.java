@@ -30,7 +30,6 @@ import gobblin.source.extractor.DataRecordException;
 import gobblin.source.extractor.extract.Command;
 import gobblin.source.extractor.extract.CommandOutput;
 import gobblin.source.extractor.extract.jdbc.SqlQueryUtils;
-import gobblin.source.extractor.extract.restapi.RestAPIConfigurationKeys;
 import gobblin.source.extractor.extract.restapi.RestApiCommand;
 import gobblin.source.extractor.extract.restapi.RestApiCommandOutput;
 import gobblin.source.extractor.watermark.Predicate;
@@ -41,18 +40,25 @@ class ZuoraClientImpl implements ZuoraClient {
   private static final Gson gson = new Gson();
   private final WorkUnitState _workUnitState;
   private final String _hostName;
-  private final Retryer<CommandOutput<RestApiCommand, String>> _retryer;
+  private final Retryer<CommandOutput<RestApiCommand, String>> _postRetryer;
+  private final Retryer<List<String>> _getRetryer;
 
   ZuoraClientImpl(WorkUnitState workUnitState) {
     _workUnitState = workUnitState;
     _hostName = _workUnitState.getProp(ConfigurationKeys.SOURCE_CONN_HOST_NAME);
-    _retryer =
+    _postRetryer =
         RetryerBuilder.<CommandOutput<RestApiCommand, String>>newBuilder().retryIfExceptionOfType(IOException.class)
             .withStopStrategy(StopStrategies
-                .stopAfterAttempt(workUnitState.getPropAsInt(RestAPIConfigurationKeys.REST_API_RETRY_LIMIT, 3)))
-            .withWaitStrategy(WaitStrategies
-                .fixedWait(workUnitState.getPropAsInt(RestAPIConfigurationKeys.REST_API_RETRY_WAIT_TIME_MILLIS, 10000),
-                    TimeUnit.MILLISECONDS)).build();
+                .stopAfterAttempt(workUnitState.getPropAsInt(ZuoraConfigurationKeys.ZUORA_API_RETRY_LIMIT_POST, 3)))
+            .withWaitStrategy(WaitStrategies.fixedWait(
+                workUnitState.getPropAsInt(ZuoraConfigurationKeys.ZUORA_API_RETRY_WAIT_TIME_MILLIS_POST, 10000),
+                TimeUnit.MILLISECONDS)).build();
+    _getRetryer = RetryerBuilder.<List<String>>newBuilder().retryIfExceptionOfType(IOException.class).withStopStrategy(
+        StopStrategies
+            .stopAfterAttempt(workUnitState.getPropAsInt(ZuoraConfigurationKeys.ZUORA_API_RETRY_LIMIT_GET_FILES, 30)))
+        .withWaitStrategy(WaitStrategies.fixedWait(
+            workUnitState.getPropAsInt(ZuoraConfigurationKeys.ZUORA_API_RETRY_WAIT_TIME_MILLIS_GET_FILES, 3000),
+            TimeUnit.MILLISECONDS)).build();
   }
 
   @Override
@@ -80,7 +86,7 @@ class ZuoraClientImpl implements ZuoraClient {
     ZuoraParams filterPayload = new ZuoraParams(_workUnitState.getProp(ZuoraConfigurationKeys.ZUORA_PARTNER, "sample"),
         _workUnitState.getProp(ZuoraConfigurationKeys.ZUORA_PROJECT, "sample"), queries,
         _workUnitState.getProp(ZuoraConfigurationKeys.ZUORA_API_NAME, "sample"),
-        _workUnitState.getProp(RestAPIConfigurationKeys.REST_API_OUTPUT_FORMAT, "csv"),
+        _workUnitState.getProp(ZuoraConfigurationKeys.ZUORA_OUTPUT_FORMAT, "csv"),
         _workUnitState.getProp(ConfigurationKeys.SOURCE_CONN_VERSION, "1.1"));
     params.add(gson.toJson(filterPayload));
     return Collections.singletonList(new RestApiCommand().build(params, RestApiCommand.RestApiCommandType.POST));
@@ -90,7 +96,7 @@ class ZuoraClientImpl implements ZuoraClient {
   public CommandOutput<RestApiCommand, String> executePostRequest(final Command command)
       throws DataRecordException {
     try {
-      return _retryer.call(new Callable<CommandOutput<RestApiCommand, String>>() {
+      return _postRetryer.call(new Callable<CommandOutput<RestApiCommand, String>>() {
         @Override
         public CommandOutput<RestApiCommand, String> call()
             throws Exception {
@@ -116,38 +122,45 @@ class ZuoraClientImpl implements ZuoraClient {
   }
 
   @Override
-  public List<String> getFileIds(String jobId)
+  public List<String> getFileIds(final String jobId)
       throws DataRecordException, IOException {
     log.info("Getting files for job " + jobId);
     String url = getEndPoint("batch-query/jobs/" + jobId);
-    Command cmd = new RestApiCommand().build(Collections.singleton(url), RestApiCommand.RestApiCommandType.GET);
+    final Command cmd = new RestApiCommand().build(Collections.singleton(url), RestApiCommand.RestApiCommandType.GET);
 
-    String status = null;
-    while (!StringUtils.equals(status, "completed")) {
-      CommandOutput<RestApiCommand, String> response = executeGetRequest(cmd);
-      Iterator<String> itr = response.getResults().values().iterator();
-      if (!itr.hasNext()) {
-        throw new DataRecordException("Failed to get file Ids based on job id " + jobId);
-      }
-      String output = itr.next();
-      JsonObject jsonResp = gson.fromJson(output, JsonObject.class).getAsJsonObject();
-      status = jsonResp.get("status").getAsString();
-      log.info(String.format("Job %s %s: %s", jobId, status, output));
-      if (status.equals("completed")) {
-        List<String> fileIds = Lists.newArrayList();
-        for (JsonElement jsonObj : jsonResp.get("batches").getAsJsonArray()) {
-          fileIds.add(jsonObj.getAsJsonObject().get("fileId").getAsString());
+    try {
+      return _getRetryer.call(new Callable<List<String>>() {
+        @Override
+        public List<String> call()
+            throws Exception {
+          return executeGetRequestInternal(cmd, jobId);
         }
-        log.info("Get Files Response - FileIds: " + fileIds);
-        return fileIds;
-      }
-      try {
-        Thread.sleep(5000);
-      } catch (InterruptedException e) {
-        throw new IOException(e);
-      }
+      });
+    } catch (Exception e) {
+      throw new DataRecordException("Get request failed for command: " + cmd.toString(), e);
     }
-    return null;
+  }
+
+  private List<String> executeGetRequestInternal(Command cmd, String jobId)
+      throws IOException, DataRecordException {
+    CommandOutput<RestApiCommand, String> response = executeGetRequest(cmd);
+    Iterator<String> itr = response.getResults().values().iterator();
+    if (!itr.hasNext()) {
+      throw new DataRecordException("Failed to get file Ids based on job id " + jobId);
+    }
+    String output = itr.next();
+    JsonObject jsonResp = gson.fromJson(output, JsonObject.class).getAsJsonObject();
+    String status = jsonResp.get("status").getAsString();
+    log.info(String.format("Job %s %s: %s", jobId, status, output));
+    if (!status.equals("completed")) {
+      throw new IOException("Retrying... This exception will be handled by retryer.");
+    }
+    List<String> fileIds = Lists.newArrayList();
+    for (JsonElement jsonObj : jsonResp.get("batches").getAsJsonArray()) {
+      fileIds.add(jsonObj.getAsJsonObject().get("fileId").getAsString());
+    }
+    log.info("Get Files Response - FileIds: " + fileIds);
+    return fileIds;
   }
 
   @Override

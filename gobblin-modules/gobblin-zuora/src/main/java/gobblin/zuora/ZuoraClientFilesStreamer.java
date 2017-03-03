@@ -17,7 +17,6 @@ import lombok.extern.slf4j.Slf4j;
 import gobblin.configuration.ConfigurationKeys;
 import gobblin.configuration.WorkUnitState;
 import gobblin.source.extractor.DataRecordException;
-import gobblin.source.extractor.extract.restapi.RestAPIConfigurationKeys;
 import gobblin.source.extractor.resultset.RecordSet;
 import gobblin.source.extractor.resultset.RecordSetList;
 import gobblin.source.extractor.utils.InputStreamCSVReader;
@@ -46,7 +45,7 @@ public class ZuoraClientFilesStreamer {
     BATCH_SIZE = workUnitState
         .getPropAsInt(ConfigurationKeys.SOURCE_QUERYBASED_FETCH_SIZE, ConfigurationKeys.DEFAULT_SOURCE_FETCH_SIZE);
     _extractor = extractor;
-    OUTPUT_FORMAT = _workUnitState.getProp(RestAPIConfigurationKeys.REST_API_OUTPUT_FORMAT);
+    OUTPUT_FORMAT = _workUnitState.getProp(ZuoraConfigurationKeys.ZUORA_OUTPUT_FORMAT);
   }
 
   public RecordSet<JsonElement> streamFiles(List<String> fileList)
