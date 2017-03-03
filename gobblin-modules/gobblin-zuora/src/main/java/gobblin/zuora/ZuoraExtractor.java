@@ -8,7 +8,6 @@ import java.util.List;
 import java.util.Map;
 
 import org.apache.commons.lang.StringUtils;
-import org.apache.http.HttpEntity;
 
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Lists;
@@ -24,14 +23,11 @@ import gobblin.configuration.WorkUnitState;
 import gobblin.source.extractor.DataRecordException;
 import gobblin.source.extractor.exception.HighWatermarkException;
 import gobblin.source.extractor.exception.RecordCountException;
-import gobblin.source.extractor.exception.RestApiConnectionException;
 import gobblin.source.extractor.exception.SchemaException;
 import gobblin.source.extractor.extract.Command;
 import gobblin.source.extractor.extract.CommandOutput;
 import gobblin.source.extractor.extract.QueryBasedExtractor;
-import gobblin.source.extractor.extract.SourceSpecificLayer;
 import gobblin.source.extractor.extract.restapi.RestApiCommand;
-import gobblin.source.extractor.extract.restapi.RestApiSpecificLayer;
 import gobblin.source.extractor.schema.Schema;
 import gobblin.source.extractor.utils.Utils;
 import gobblin.source.extractor.watermark.Predicate;
@@ -40,7 +36,7 @@ import gobblin.source.workunit.WorkUnit;
 
 
 @Slf4j
-public class ZuoraExtractor extends QueryBasedExtractor<JsonArray, JsonElement> implements SourceSpecificLayer<JsonArray, JsonElement>, RestApiSpecificLayer {
+public class ZuoraExtractor extends QueryBasedExtractor<JsonArray, JsonElement> {
   private static final Gson gson = new Gson();
   private static final String TIMESTAMP_FORMAT = "yyyy-MM-dd'T'HH:mm:ss";
   private static final String DATE_FORMAT = "yyyy-MM-dd";
@@ -59,23 +55,13 @@ public class ZuoraExtractor extends QueryBasedExtractor<JsonArray, JsonElement> 
   public Iterator<JsonElement> getRecordSet(String schema, String entity, WorkUnit workUnit,
       List<Predicate> predicateList)
       throws DataRecordException, IOException {
-    if (!this.getPullStatus()) {
-      log.info("pull status false");
-      return null;
-    }
-
     if (_fileIds == null) {
-      List<Command> cmds = getDataMetadata(schema, entity, workUnit, predicateList);
+      List<Command> cmds = _client.buildPostCommand(predicateList);
       CommandOutput<RestApiCommand, String> postResponse = _client.executePostRequest(cmds.get(0));
       String jobId = ZuoraClientImpl.getJobId(postResponse);
       _fileIds = _client.getFileIds(jobId);
     }
-    return getData(null);
-  }
 
-  @Override
-  public Iterator<JsonElement> getData(CommandOutput<?, ?> postResp)
-      throws DataRecordException, IOException {
     if (!_fileStreamer.isJobFinished()) {
       return _fileStreamer.streamFiles(_fileIds).iterator();
     }
@@ -85,47 +71,39 @@ public class ZuoraExtractor extends QueryBasedExtractor<JsonArray, JsonElement> 
   @Override
   public void extractMetadata(String schema, String entity, WorkUnit workUnit)
       throws SchemaException, IOException {
-    log.info("Extract Metadata using REST Api");
+    String deltaFields = workUnit.getProp(ConfigurationKeys.EXTRACT_DELTA_FIELDS_KEY);
+    String primaryKeyColumn = workUnit.getProp(ConfigurationKeys.EXTRACT_PRIMARY_KEY_FIELDS_KEY);
     JsonArray columnArray = new JsonArray();
-    JsonArray array;
+
     try {
-      List<Command> cmds = this.getSchemaMetadata(schema, entity);
-      CommandOutput<?, ?> response = null;
-      if (cmds != null) {
-        response = _client.executeGetRequest(cmds.get(0));
-      }
-      array = this.getSchema(response);
-      if (array == null) {
-        log.warn("Schema not found in metadata and configurations");
-        columnArray = getDefaultSchema();
-      } else {
-        for (JsonElement columnElement : array) {
-          Schema obj = gson.fromJson(columnElement, Schema.class);
-          String columnName = obj.getColumnName();
+      JsonArray array =
+          gson.fromJson(workUnit.getProp(ConfigurationKeys.SOURCE_SCHEMA), JsonArray.class).getAsJsonArray();
+      for (JsonElement columnElement : array) {
+        Schema obj = gson.fromJson(columnElement, Schema.class);
+        String columnName = obj.getColumnName();
 
-          obj.setWaterMark(
-              this.isWatermarkColumn(workUnit.getProp(ConfigurationKeys.EXTRACT_DELTA_FIELDS_KEY), columnName));
-
-          if (this.isWatermarkColumn(workUnit.getProp(ConfigurationKeys.EXTRACT_DELTA_FIELDS_KEY), columnName)) {
-            obj.setNullable(false);
-          } else if (
-              this.getPrimarykeyIndex(workUnit.getProp(ConfigurationKeys.EXTRACT_PRIMARY_KEY_FIELDS_KEY), columnName)
-                  == 0) {
-            // set all columns as nullable except primary key and watermark columns
-            obj.setNullable(true);
-          }
-
-          obj.setPrimaryKey(
-              this.getPrimarykeyIndex(workUnit.getProp(ConfigurationKeys.EXTRACT_PRIMARY_KEY_FIELDS_KEY), columnName));
-
-          String jsonStr = gson.toJson(obj);
-          JsonObject jsonObject = gson.fromJson(jsonStr, JsonObject.class).getAsJsonObject();
-          columnArray.add(jsonObject);
+        boolean isWaterMarkColumn = isWatermarkColumn(deltaFields, columnName);
+        if (isWaterMarkColumn) {
+          obj.setWaterMark(true);
+          obj.setNullable(false);
         }
+
+        int primarykeyIndex = getPrimarykeyIndex(primaryKeyColumn, columnName);
+        obj.setPrimaryKey(primarykeyIndex);
+        boolean isPrimaryKeyColumn = primarykeyIndex > 0;
+        if (isPrimaryKeyColumn) {
+          obj.setNullable(false);
+        } else {
+          obj.setNullable(true);
+        }
+
+        String jsonStr = gson.toJson(obj);
+        JsonObject jsonObject = gson.fromJson(jsonStr, JsonObject.class).getAsJsonObject();
+        columnArray.add(jsonObject);
       }
 
-      log.info("Schema:" + columnArray);
-      this.setOutputSchema(columnArray);
+      log.info("Update Schema is:" + columnArray);
+      setOutputSchema(columnArray);
     } catch (Exception e) {
       throw new SchemaException("Failed to get schema using rest api; error - " + e.getMessage(), e);
     }
@@ -135,127 +113,52 @@ public class ZuoraExtractor extends QueryBasedExtractor<JsonArray, JsonElement> 
   public long getMaxWatermark(String schema, String entity, String watermarkColumn,
       List<Predicate> snapshotPredicateList, String watermarkSourceFormat)
       throws HighWatermarkException {
-    log.debug("Get high watermark using Rest Api");
-    long CalculatedHighWatermark;
-    try {
-      List<Command> cmds = getHighWatermarkMetadata(schema, entity, watermarkColumn, snapshotPredicateList);
-      CommandOutput<RestApiCommand, String> response = executeRequest(cmds);
-      CalculatedHighWatermark = this.getHighWatermark(response, watermarkColumn, watermarkSourceFormat);
-    } catch (Exception e) {
-      throw new HighWatermarkException("Failed to get high watermark using rest api; error - " + e.getMessage(), e);
-    }
-
-    if (CalculatedHighWatermark != -1) {
-      return CalculatedHighWatermark;
-    }
-    return this.workUnit.getHighWaterMark();
+    throw new HighWatermarkException("Not supported");
   }
 
   @Override
   public long getSourceCount(String schema, String entity, WorkUnit workUnit, List<Predicate> predicateList)
       throws RecordCountException {
-    log.debug("Get source record count using Rest Api");
-    long count;
-    try {
-      List<Command> cmds = getCountMetadata(schema, entity, workUnit, predicateList);
-      CommandOutput<RestApiCommand, String> response = executeRequest(cmds);
-      count = getCount(response);
-    } catch (Exception e) {
-      throw new RecordCountException("Failed to get record count using rest api; error - " + e.getMessage(), e);
-    }
-    if (count != 0) {
-      return count;
-    }
-    return _fileStreamer.getTotalRecords();
-  }
-
-  @Override
-  public List<Command> getSchemaMetadata(String schema, String entity)
-      throws SchemaException {
-    return null;
-  }
-
-  @Override
-  public JsonArray getSchema(CommandOutput<?, ?> response)
-      throws SchemaException, IOException {
-    JsonArray schema = null;
-    if (StringUtils.isNotBlank(this.workUnit.getProp(ConfigurationKeys.SOURCE_SCHEMA))) {
-      JsonArray element = gson.fromJson(this.workUnit.getProp(ConfigurationKeys.SOURCE_SCHEMA), JsonArray.class);
-      schema = element.getAsJsonArray();
-    }
-    return schema;
-  }
-
-  @Override
-  public List<Command> getDataMetadata(String schema, String entity, WorkUnit workUnit, List<Predicate> predicateList)
-      throws DataRecordException {
-    try {
-      return _client.buildPostCommand(predicateList);
-    } catch (Exception e) {
-      throw new DataRecordException("Failed to get RightNowCloud url for data records; error - " + e.getMessage(), e);
-    }
+    //Please set source.querybased.skip.count.calc to true
+    throw new RecordCountException("Not supported");
   }
 
   @Override
   public String getWatermarkSourceFormat(WatermarkType watermarkType) {
-    String columnFormat = null;
     switch (watermarkType) {
       case TIMESTAMP:
-        columnFormat = "''yyyy-MM-dd'T'HH:mm:ss''";
-        break;
+        return "''yyyy-MM-dd'T'HH:mm:ss''";
       case DATE:
-        columnFormat = "yyyy-MM-dd";
-        break;
+        return DATE_FORMAT;
+      case HOUR:
+        return HOUR_FORMAT;
       default:
-        log.error("Watermark type " + watermarkType.toString() + " not recognized");
+        throw new RuntimeException("Watermark type " + watermarkType.toString() + " not supported");
     }
-    return columnFormat;
   }
 
   @Override
   public String getHourPredicateCondition(String column, long value, String valueFormat, String operator) {
-    log.debug("Getting hour predicate");
-    String Formattedvalue = Utils.toDateTimeFormat(Long.toString(value), valueFormat, HOUR_FORMAT);
-    return column + " " + operator + " '" + Formattedvalue + "'";
+    String hourPredicate = String
+        .format("%s %s '%s'", column, operator, Utils.toDateTimeFormat(Long.toString(value), valueFormat, HOUR_FORMAT));
+    log.info("Hour predicate is: " + hourPredicate);
+    return hourPredicate;
   }
 
   @Override
   public String getDatePredicateCondition(String column, long value, String valueFormat, String operator) {
-    log.debug("Getting date predicate");
-    String Formattedvalue = Utils.toDateTimeFormat(Long.toString(value), valueFormat, DATE_FORMAT);
-    return column + " " + operator + " '" + Formattedvalue + "'";
+    String datePredicate = String
+        .format("%s %s '%s'", column, operator, Utils.toDateTimeFormat(Long.toString(value), valueFormat, DATE_FORMAT));
+    log.info("Date predicate is: " + datePredicate);
+    return datePredicate;
   }
 
   @Override
   public String getTimestampPredicateCondition(String column, long value, String valueFormat, String operator) {
-    log.debug("Getting timestamp predicate");
-    String Formattedvalue = Utils.toDateTimeFormat(Long.toString(value), valueFormat, TIMESTAMP_FORMAT);
-    return column + " " + operator + " '" + Formattedvalue + "'";
-  }
-
-  @Override
-  public List<Command> getHighWatermarkMetadata(String schema, String entity, String watermarkColumn,
-      List<Predicate> predicateList)
-      throws HighWatermarkException {
-    return null;
-  }
-
-  @Override
-  public long getHighWatermark(CommandOutput<?, ?> response, String watermarkColumn, String predicateColumnFormat)
-      throws HighWatermarkException {
-    return -1;
-  }
-
-  @Override
-  public List<Command> getCountMetadata(String schema, String entity, WorkUnit workUnit, List<Predicate> predicateList)
-      throws RecordCountException {
-    return null;
-  }
-
-  @Override
-  public long getCount(CommandOutput<?, ?> response)
-      throws RecordCountException {
-    return -1;
+    String timeStampPredicate = String.format("%s %s '%s'", column, operator,
+        Utils.toDateTimeFormat(Long.toString(value), valueFormat, TIMESTAMP_FORMAT));
+    log.info("Timestamp predicate is: " + timeStampPredicate);
+    return timeStampPredicate;
   }
 
   @Override
@@ -267,18 +170,7 @@ public class ZuoraExtractor extends QueryBasedExtractor<JsonArray, JsonElement> 
     return dataTypeMap;
   }
 
-  @Override
-  public HttpEntity getAuthentication()
-      throws RestApiConnectionException {
-    return null;
-  }
-
-  @Override
-  public String getNextUrl() {
-    return null;
-  }
-
-  public List<String> extractHeader(ArrayList<String> firstLine) {
+  List<String> extractHeader(ArrayList<String> firstLine) {
     List<String> header = ZuoraUtil.getHeader(firstLine);
     if (StringUtils.isBlank(workUnitState.getProp(ConfigurationKeys.SOURCE_SCHEMA))) {
       List<String> timeStampColumns = Lists.newArrayList();
@@ -325,61 +217,6 @@ public class ZuoraExtractor extends QueryBasedExtractor<JsonArray, JsonElement> 
     this.setOutputSchema(columnArray);
   }
 
-  private CommandOutput<RestApiCommand, String> executeRequest(List<Command> cmds)
-      throws Exception {
-    if (cmds == null || cmds.isEmpty()) {
-      return null;
-    }
-    Command cmd = cmds.get(0);
-    RestApiCommand.RestApiCommandType commandType = (RestApiCommand.RestApiCommandType) cmd.getCommandType();
-    CommandOutput<RestApiCommand, String> output = null;
-    switch (commandType) {
-      case GET:
-        output = _client.executeGetRequest(cmd);
-        break;
-      case POST:
-        output = _client.executePostRequest(cmd);
-        break;
-      default:
-        log.error("Invalid REST API command type " + commandType);
-        break;
-    }
-    return output;
-  }
-
-  private JsonArray getDefaultSchema() {
-    JsonArray columnArray = new JsonArray();
-    String pk = workUnit.getProp(ConfigurationKeys.EXTRACT_PRIMARY_KEY_FIELDS_KEY);
-    if (StringUtils.isNotBlank(pk)) {
-      List<String> pkCols = Arrays.asList(pk.replaceAll(" ", "").split(","));
-      for (String col : pkCols) {
-        Schema obj = new Schema();
-        obj.setColumnName(col);
-        obj.setDataType(convertDataType(col, null, null, null));
-        obj.setComment("default");
-        String jsonStr = gson.toJson(obj);
-        JsonObject jsonObject = gson.fromJson(jsonStr, JsonObject.class).getAsJsonObject();
-        columnArray.add(jsonObject);
-      }
-    }
-
-    String watermark = workUnit.getProp(ConfigurationKeys.EXTRACT_DELTA_FIELDS_KEY);
-    if (StringUtils.isNotBlank(watermark)) {
-      List<String> watermarkCols = Arrays.asList(watermark.replaceAll(" ", "").split(","));
-      for (String col : watermarkCols) {
-        Schema obj = new Schema();
-        obj.setColumnName(col);
-        obj.setDataType(convertDataType(col, null, null, null));
-        obj.setComment("default");
-        obj.setWaterMark(true);
-        String jsonStr = gson.toJson(obj);
-        JsonObject jsonObject = gson.fromJson(jsonStr, JsonObject.class).getAsJsonObject();
-        columnArray.add(jsonObject);
-      }
-    }
-    return columnArray;
-  }
-
   @Override
   public void closeConnection()
       throws Exception {
@@ -395,9 +232,5 @@ public class ZuoraExtractor extends QueryBasedExtractor<JsonArray, JsonElement> 
   @Override
   public void setTimeOut(int timeOut) {
 
-  }
-
-  public boolean getPullStatus() {
-    return true;
   }
 }
