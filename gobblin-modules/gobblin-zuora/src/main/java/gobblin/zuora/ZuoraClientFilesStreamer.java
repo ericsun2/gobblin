@@ -120,10 +120,6 @@ public class ZuoraClientFilesStreamer {
     return _currentReader == null || !_currentReader.ready();
   }
 
-  public long getTotalRecords() {
-    return _totalRecords;
-  }
-
   public boolean isJobFinished() {
     return _jobFinished;
   }

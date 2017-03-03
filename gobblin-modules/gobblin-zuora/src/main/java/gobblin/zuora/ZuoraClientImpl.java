@@ -80,7 +80,7 @@ class ZuoraClientImpl implements ZuoraClient {
     ZuoraParams filterPayload = new ZuoraParams(_workUnitState.getProp(ZuoraConfigurationKeys.ZUORA_PARTNER, "sample"),
         _workUnitState.getProp(ZuoraConfigurationKeys.ZUORA_PROJECT, "sample"), queries,
         _workUnitState.getProp(ZuoraConfigurationKeys.ZUORA_API_NAME, "sample"),
-        _workUnitState.getProp(ZuoraConfigurationKeys.ZUORA_OUTPUT_FORMAT, "csv"),
+        _workUnitState.getProp(RestAPIConfigurationKeys.REST_API_OUTPUT_FORMAT, "csv"),
         _workUnitState.getProp(ConfigurationKeys.SOURCE_CONN_VERSION, "1.1"));
     params.add(gson.toJson(filterPayload));
     return Collections.singletonList(new RestApiCommand().build(params, RestApiCommand.RestApiCommandType.POST));

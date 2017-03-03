@@ -120,8 +120,11 @@ public class ZuoraExtractor extends QueryBasedExtractor<JsonArray, JsonElement> 
   @Override
   public long getSourceCount(String schema, String entity, WorkUnit workUnit, List<Predicate> predicateList)
       throws RecordCountException {
-    throw new RecordCountException(
-        "GetSourceCount with query is not supported! Please set source.querybased.skip.count.calc to true.");
+    //Set source.querybased.skip.count.calc to true will set SourceCount to -1. However, ...
+
+    //This ExpectedRecordCount will determine tablesWithNoUpdatesOnPreviousRun in QueryBasedSource.
+    //We need to return a positive number to bypass this check and move Low watermark forward.
+    return 1;
   }
 
   @Override
