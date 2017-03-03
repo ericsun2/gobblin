@@ -113,21 +113,22 @@ public class ZuoraExtractor extends QueryBasedExtractor<JsonArray, JsonElement> 
   public long getMaxWatermark(String schema, String entity, String watermarkColumn,
       List<Predicate> snapshotPredicateList, String watermarkSourceFormat)
       throws HighWatermarkException {
-    throw new HighWatermarkException("Not supported");
+    throw new HighWatermarkException(
+        "GetMaxWatermark with query is not supported! Please set source.querybased.skip.high.watermark.calc to true.");
   }
 
   @Override
   public long getSourceCount(String schema, String entity, WorkUnit workUnit, List<Predicate> predicateList)
       throws RecordCountException {
-    //Please set source.querybased.skip.count.calc to true
-    throw new RecordCountException("Not supported");
+    throw new RecordCountException(
+        "GetSourceCount with query is not supported! Please set source.querybased.skip.count.calc to true.");
   }
 
   @Override
   public String getWatermarkSourceFormat(WatermarkType watermarkType) {
     switch (watermarkType) {
       case TIMESTAMP:
-        return "''yyyy-MM-dd'T'HH:mm:ss''";
+        return TIMESTAMP_FORMAT;
       case DATE:
         return DATE_FORMAT;
       case HOUR:
