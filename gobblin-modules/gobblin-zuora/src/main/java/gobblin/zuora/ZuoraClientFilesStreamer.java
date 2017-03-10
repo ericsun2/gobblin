@@ -25,10 +25,10 @@ import gobblin.source.extractor.utils.Utils;
 
 @Slf4j
 public class ZuoraClientFilesStreamer {
-  private final String OUTPUT_FORMAT;
+  private final String outputFormat;
   private final WorkUnitState _workUnitState;
   private final ZuoraClient _client;
-  private final int BATCH_SIZE;
+  private final int batchSize;
 
   private boolean _jobFinished = false;
   private long _totalRecords = 0;
@@ -41,9 +41,9 @@ public class ZuoraClientFilesStreamer {
   public ZuoraClientFilesStreamer(WorkUnitState workUnitState, ZuoraClient client) {
     _workUnitState = workUnitState;
     _client = client;
-    BATCH_SIZE = workUnitState
+    batchSize = workUnitState
         .getPropAsInt(ConfigurationKeys.SOURCE_QUERYBASED_FETCH_SIZE, ConfigurationKeys.DEFAULT_SOURCE_FETCH_SIZE);
-    OUTPUT_FORMAT = _workUnitState.getProp(ZuoraConfigurationKeys.ZUORA_OUTPUT_FORMAT);
+    outputFormat = _workUnitState.getProp(ZuoraConfigurationKeys.ZUORA_OUTPUT_FORMAT);
   }
 
   public RecordSet<JsonElement> streamFiles(List<String> fileList, List<String> header)
@@ -73,7 +73,7 @@ public class ZuoraClientFilesStreamer {
       while ((csvRecord = reader.nextRecord()) != null) {
         rs.add(Utils.csvToJsonObject(header, csvRecord, header.size()));
         ++_totalRecords;
-        if (++count >= BATCH_SIZE) {
+        if (++count >= batchSize) {
           break;
         }
       }
@@ -96,7 +96,7 @@ public class ZuoraClientFilesStreamer {
     _currentConnection = ZuoraUtil.getConnection(_client.getEndPoint("file/" + fileId), _workUnitState);
     _currentConnection.setRequestProperty("Accept", "application/json");
     InputStream stream = _currentConnection.getInputStream();
-    if (StringUtils.isNotBlank(OUTPUT_FORMAT) && OUTPUT_FORMAT.equalsIgnoreCase("gzip")) {
+    if (StringUtils.isNotBlank(outputFormat) && outputFormat.equalsIgnoreCase("gzip")) {
       stream = new GZIPInputStream(stream);
     }
     _currentReader = new BufferedReader(new InputStreamReader(stream));

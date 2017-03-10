@@ -37,7 +37,7 @@ import gobblin.source.workunit.WorkUnit;
 
 @Slf4j
 public class ZuoraExtractor extends QueryBasedExtractor<JsonArray, JsonElement> {
-  private static final Gson gson = new Gson();
+  private static final Gson GSON = new Gson();
   private static final String TIMESTAMP_FORMAT = "yyyy-MM-dd'T'HH:mm:ss";
   private static final String DATE_FORMAT = "yyyy-MM-dd";
   private static final String HOUR_FORMAT = "HH";
@@ -79,9 +79,9 @@ public class ZuoraExtractor extends QueryBasedExtractor<JsonArray, JsonElement> 
 
     try {
       JsonArray array =
-          gson.fromJson(workUnit.getProp(ConfigurationKeys.SOURCE_SCHEMA), JsonArray.class).getAsJsonArray();
+          GSON.fromJson(workUnit.getProp(ConfigurationKeys.SOURCE_SCHEMA), JsonArray.class).getAsJsonArray();
       for (JsonElement columnElement : array) {
-        Schema obj = gson.fromJson(columnElement, Schema.class);
+        Schema obj = GSON.fromJson(columnElement, Schema.class);
         String columnName = obj.getColumnName();
         _header.add(columnName);
 
@@ -100,8 +100,8 @@ public class ZuoraExtractor extends QueryBasedExtractor<JsonArray, JsonElement> 
           obj.setNullable(true);
         }
 
-        String jsonStr = gson.toJson(obj);
-        JsonObject jsonObject = gson.fromJson(jsonStr, JsonObject.class).getAsJsonObject();
+        String jsonStr = GSON.toJson(obj);
+        JsonObject jsonObject = GSON.fromJson(jsonStr, JsonObject.class).getAsJsonObject();
         columnArray.add(jsonObject);
       }
 
@@ -215,8 +215,8 @@ public class ZuoraExtractor extends QueryBasedExtractor<JsonArray, JsonElement> 
       obj.setPrimaryKey(
           getPrimarykeyIndex(workUnit.getProp(ConfigurationKeys.EXTRACT_PRIMARY_KEY_FIELDS_KEY), columnName));
 
-      String jsonStr = gson.toJson(obj);
-      JsonObject jsonObject = gson.fromJson(jsonStr, JsonObject.class).getAsJsonObject();
+      String jsonStr = GSON.toJson(obj);
+      JsonObject jsonObject = GSON.fromJson(jsonStr, JsonObject.class).getAsJsonObject();
       columnArray.add(jsonObject);
     }
 
