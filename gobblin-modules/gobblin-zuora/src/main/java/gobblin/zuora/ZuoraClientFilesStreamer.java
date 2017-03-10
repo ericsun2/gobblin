@@ -28,51 +28,50 @@ public class ZuoraClientFilesStreamer {
   private final String OUTPUT_FORMAT;
   private final WorkUnitState _workUnitState;
   private final ZuoraClient _client;
-  private ZuoraExtractor _extractor;
   private final int BATCH_SIZE;
 
-  private List<String> _header = null;
   private boolean _jobFinished = false;
   private long _totalRecords = 0;
 
   private BufferedReader _currentReader;
-  private int _currentFileIndex = 0;
+  private int _currentFileIndex = -1;
+  private int _skipHeaderIndex = 0; //Indicate whether the header has been skipped for a file.
   private HttpsURLConnection _currentConnection;
 
-  public ZuoraClientFilesStreamer(WorkUnitState workUnitState, ZuoraClient client, ZuoraExtractor extractor) {
+  public ZuoraClientFilesStreamer(WorkUnitState workUnitState, ZuoraClient client) {
     _workUnitState = workUnitState;
     _client = client;
     BATCH_SIZE = workUnitState
         .getPropAsInt(ConfigurationKeys.SOURCE_QUERYBASED_FETCH_SIZE, ConfigurationKeys.DEFAULT_SOURCE_FETCH_SIZE);
-    _extractor = extractor;
     OUTPUT_FORMAT = _workUnitState.getProp(ZuoraConfigurationKeys.ZUORA_OUTPUT_FORMAT);
   }
 
-  public RecordSet<JsonElement> streamFiles(List<String> fileList)
+  public RecordSet<JsonElement> streamFiles(List<String> fileList, List<String> header)
       throws DataRecordException {
     try {
       if (currentReaderDone()) {
+        ++_currentFileIndex;
         closeCurrentSession();
         if (_currentFileIndex >= fileList.size()) {
           log.info("Finished streaming all files.");
           _jobFinished = true;
           return new RecordSetList<>();
         }
-
-        String nextFile = fileList.get(_currentFileIndex);
-        initializeForNewFile(nextFile);
+        initializeForNewFile(fileList);
       }
-      log.info("Streaming file ...");
+      log.info(String
+          .format("Streaming file at index %s with id %s ...", _currentFileIndex, fileList.get(_currentFileIndex)));
       InputStreamCSVReader reader = new InputStreamCSVReader(_currentReader);
-      if (_header == null) {
-        _header = _extractor.extractHeader(reader.nextRecord());
+      if (_skipHeaderIndex == _currentFileIndex) {
+        reader.nextRecord(); //skip header
+        ++_skipHeaderIndex;
       }
 
       RecordSetList<JsonElement> rs = new RecordSetList<>();
       List<String> csvRecord;
       int count = 0;
       while ((csvRecord = reader.nextRecord()) != null) {
-        rs.add(Utils.csvToJsonObject(_header, csvRecord, _header.size()));
+        rs.add(Utils.csvToJsonObject(header, csvRecord, header.size()));
         ++_totalRecords;
         if (++count >= BATCH_SIZE) {
           break;
@@ -90,9 +89,10 @@ public class ZuoraClientFilesStreamer {
     }
   }
 
-  private void initializeForNewFile(String fileId)
+  private void initializeForNewFile(List<String> fileList)
       throws IOException {
-    log.info("Start streaming file with id " + fileId);
+    String fileId = fileList.get(_currentFileIndex);
+    log.info(String.format("Start streaming file at index %s with id %s", _currentFileIndex, fileId));
     _currentConnection = ZuoraUtil.getConnection(_client.getEndPoint("file/" + fileId), _workUnitState);
     _currentConnection.setRequestProperty("Accept", "application/json");
     InputStream stream = _currentConnection.getInputStream();
@@ -100,7 +100,6 @@ public class ZuoraClientFilesStreamer {
       stream = new GZIPInputStream(stream);
     }
     _currentReader = new BufferedReader(new InputStreamReader(stream));
-    ++_currentFileIndex;
   }
 
   private void closeCurrentSession()

@@ -44,11 +44,12 @@ public class ZuoraExtractor extends QueryBasedExtractor<JsonArray, JsonElement> 
   private final ZuoraClient _client;
   private final ZuoraClientFilesStreamer _fileStreamer;
   private List<String> _fileIds;
+  private List<String> _header;
 
   public ZuoraExtractor(WorkUnitState workUnitState) {
     super(workUnitState);
     _client = new ZuoraClientImpl(workUnitState);
-    _fileStreamer = new ZuoraClientFilesStreamer(workUnitState, _client, this);
+    _fileStreamer = new ZuoraClientFilesStreamer(workUnitState, _client);
   }
 
   @Override
@@ -63,7 +64,7 @@ public class ZuoraExtractor extends QueryBasedExtractor<JsonArray, JsonElement> 
     }
 
     if (!_fileStreamer.isJobFinished()) {
-      return _fileStreamer.streamFiles(_fileIds).iterator();
+      return _fileStreamer.streamFiles(_fileIds, _header).iterator();
     }
     return null;
   }
@@ -74,6 +75,7 @@ public class ZuoraExtractor extends QueryBasedExtractor<JsonArray, JsonElement> 
     String deltaFields = workUnit.getProp(ConfigurationKeys.EXTRACT_DELTA_FIELDS_KEY);
     String primaryKeyColumn = workUnit.getProp(ConfigurationKeys.EXTRACT_PRIMARY_KEY_FIELDS_KEY);
     JsonArray columnArray = new JsonArray();
+    _header = new ArrayList<>();
 
     try {
       JsonArray array =
@@ -81,6 +83,7 @@ public class ZuoraExtractor extends QueryBasedExtractor<JsonArray, JsonElement> 
       for (JsonElement columnElement : array) {
         Schema obj = gson.fromJson(columnElement, Schema.class);
         String columnName = obj.getColumnName();
+        _header.add(columnName);
 
         boolean isWaterMarkColumn = isWatermarkColumn(deltaFields, columnName);
         if (isWaterMarkColumn) {
