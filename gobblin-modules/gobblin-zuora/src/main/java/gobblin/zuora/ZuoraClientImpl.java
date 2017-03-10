@@ -49,15 +49,15 @@ class ZuoraClientImpl implements ZuoraClient {
     _postRetryer =
         RetryerBuilder.<CommandOutput<RestApiCommand, String>>newBuilder().retryIfExceptionOfType(IOException.class)
             .withStopStrategy(StopStrategies
-                .stopAfterAttempt(workUnitState.getPropAsInt(ZuoraConfigurationKeys.ZUORA_API_RETRY_LIMIT_POST, 3)))
+                .stopAfterAttempt(workUnitState.getPropAsInt(ZuoraConfigurationKeys.ZUORA_API_RETRY_LIMIT_POST, 5)))
             .withWaitStrategy(WaitStrategies.fixedWait(
-                workUnitState.getPropAsInt(ZuoraConfigurationKeys.ZUORA_API_RETRY_WAIT_TIME_MILLIS_POST, 10000),
+                workUnitState.getPropAsInt(ZuoraConfigurationKeys.ZUORA_API_RETRY_WAIT_TIME_MILLIS_POST, 5000),
                 TimeUnit.MILLISECONDS)).build();
     _getRetryer = RetryerBuilder.<List<String>>newBuilder().retryIfExceptionOfType(IOException.class).withStopStrategy(
         StopStrategies
             .stopAfterAttempt(workUnitState.getPropAsInt(ZuoraConfigurationKeys.ZUORA_API_RETRY_LIMIT_GET_FILES, 30)))
         .withWaitStrategy(WaitStrategies.fixedWait(
-            workUnitState.getPropAsInt(ZuoraConfigurationKeys.ZUORA_API_RETRY_WAIT_TIME_MILLIS_GET_FILES, 3000),
+            workUnitState.getPropAsInt(ZuoraConfigurationKeys.ZUORA_API_RETRY_WAIT_TIME_MILLIS_GET_FILES, 5000),
             TimeUnit.MILLISECONDS)).build();
   }
 
