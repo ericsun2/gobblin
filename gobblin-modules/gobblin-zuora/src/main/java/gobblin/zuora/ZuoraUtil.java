@@ -20,6 +20,7 @@ import lombok.extern.slf4j.Slf4j;
 
 import gobblin.configuration.ConfigurationKeys;
 import gobblin.configuration.WorkUnitState;
+import gobblin.password.PasswordManager;
 
 
 @Slf4j
@@ -44,7 +45,9 @@ public class ZuoraUtil {
 
     String userName = workUnitState.getProp(ConfigurationKeys.SOURCE_CONN_USERNAME);
     if (StringUtils.isNotBlank(userName)) {
-      String userpass = userName + ":" + workUnitState.getProp(ConfigurationKeys.SOURCE_CONN_PASSWORD);
+      String password =
+          PasswordManager.getInstance(workUnitState).readPassword(workUnitState.getProp(ConfigurationKeys.SOURCE_CONN_PASSWORD));
+      String userpass = userName + ":" + password;
       String basicAuth = "Basic " + new String(new Base64().encode(userpass.getBytes()));
       connection.setRequestProperty("Authorization", basicAuth);
     }
