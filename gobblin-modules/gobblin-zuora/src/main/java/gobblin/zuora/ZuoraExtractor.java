@@ -96,8 +96,6 @@ public class ZuoraExtractor extends QueryBasedExtractor<JsonArray, JsonElement> 
         boolean isPrimaryKeyColumn = primarykeyIndex > 0;
         if (isPrimaryKeyColumn) {
           obj.setNullable(false);
-        } else {
-          obj.setNullable(true);
         }
 
         String jsonStr = GSON.toJson(obj);
