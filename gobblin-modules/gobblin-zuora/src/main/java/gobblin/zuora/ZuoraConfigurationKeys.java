@@ -12,4 +12,6 @@ public class ZuoraConfigurationKeys {
   public static final String ZUORA_API_RETRY_POST_WAIT_TIME = "zuora.api.retry.post.wait_time";
   public static final String ZUORA_API_RETRY_GET_FILES_COUNT = "zuora.api.retry.get_files.count";
   public static final String ZUORA_API_RETRY_GET_FILES_WAIT_TIME = "zuora.api.retry.get_files.wait_time";
+  public static final String ZUORA_API_RETRY_STREAM_FILES_COUNT = "zuora.api.retry.stream_files.count";
+  public static final String ZUORA_API_RETRY_STREAM_FILES_WAIT_TIME = "zuora.api.retry.stream_files.wait_time";
 }

@@ -5,10 +5,18 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.util.List;
+import java.util.concurrent.Callable;
+import java.util.concurrent.TimeUnit;
 import java.util.zip.GZIPInputStream;
 
 import org.apache.commons.lang.StringUtils;
+import org.apache.commons.lang3.tuple.ImmutablePair;
+import org.apache.commons.lang3.tuple.Pair;
 
+import com.github.rholder.retry.Retryer;
+import com.github.rholder.retry.RetryerBuilder;
+import com.github.rholder.retry.StopStrategies;
+import com.github.rholder.retry.WaitStrategies;
 import com.google.gson.JsonElement;
 
 import javax.net.ssl.HttpsURLConnection;
@@ -29,6 +37,7 @@ public class ZuoraClientFilesStreamer {
   private final WorkUnitState _workUnitState;
   private final ZuoraClient _client;
   private final int batchSize;
+  private final Retryer<Void> _getRetryer;
 
   private boolean _jobFinished = false;
   private long _totalRecords = 0;
@@ -44,6 +53,12 @@ public class ZuoraClientFilesStreamer {
     batchSize = workUnitState
         .getPropAsInt(ConfigurationKeys.SOURCE_QUERYBASED_FETCH_SIZE, ConfigurationKeys.DEFAULT_SOURCE_FETCH_SIZE);
     outputFormat = _workUnitState.getProp(ZuoraConfigurationKeys.ZUORA_OUTPUT_FORMAT);
+    _getRetryer = RetryerBuilder.<Void>newBuilder().retryIfExceptionOfType(IOException.class).withStopStrategy(
+        StopStrategies.stopAfterAttempt(
+            workUnitState.getPropAsInt(ZuoraConfigurationKeys.ZUORA_API_RETRY_STREAM_FILES_COUNT, 10)))
+        .withWaitStrategy(WaitStrategies
+            .fixedWait(workUnitState.getPropAsInt(ZuoraConfigurationKeys.ZUORA_API_RETRY_STREAM_FILES_WAIT_TIME, 10000),
+                TimeUnit.MILLISECONDS)).build();
   }
 
   public RecordSet<JsonElement> streamFiles(List<String> fileList, List<String> header)
@@ -79,7 +94,7 @@ public class ZuoraClientFilesStreamer {
       }
       log.info("Total number of records downloaded: " + _totalRecords);
       return rs;
-    } catch (Exception e) {
+    } catch (IOException e) {
       try {
         closeCurrentSession();
       } catch (IOException e1) {
@@ -90,16 +105,36 @@ public class ZuoraClientFilesStreamer {
   }
 
   private void initializeForNewFile(List<String> fileList)
-      throws IOException {
-    String fileId = fileList.get(_currentFileIndex);
+      throws DataRecordException {
+    final String fileId = fileList.get(_currentFileIndex);
     log.info(String.format("Start streaming file at index %s with id %s", _currentFileIndex, fileId));
-    _currentConnection = ZuoraUtil.getConnection(_client.getEndPoint("file/" + fileId), _workUnitState);
-    _currentConnection.setRequestProperty("Accept", "application/json");
-    InputStream stream = _currentConnection.getInputStream();
+
+    try {
+      _getRetryer.call(new Callable<Void>() {
+        @Override
+        public Void call()
+            throws Exception {
+          Pair<HttpsURLConnection, BufferedReader> initialized = createReader(fileId, _workUnitState);
+          _currentConnection = initialized.getLeft();
+          _currentReader = initialized.getRight();
+          return null;
+        }
+      });
+    } catch (Exception e) {
+      throw new DataRecordException(
+          String.format("Retryer failed: Build connection for streaming failed for file id: %s", fileId), e);
+    }
+  }
+
+  private Pair<HttpsURLConnection, BufferedReader> createReader(String fileId, WorkUnitState workUnitState)
+      throws IOException {
+    HttpsURLConnection connection = ZuoraUtil.getConnection(_client.getEndPoint("file/" + fileId), workUnitState);
+    connection.setRequestProperty("Accept", "application/json");
+    InputStream stream = connection.getInputStream();
     if (StringUtils.isNotBlank(outputFormat) && outputFormat.equalsIgnoreCase("gzip")) {
       stream = new GZIPInputStream(stream);
     }
-    _currentReader = new BufferedReader(new InputStreamReader(stream));
+    return new ImmutablePair<>(connection, new BufferedReader(new InputStreamReader(stream)));
   }
 
   private void closeCurrentSession()
