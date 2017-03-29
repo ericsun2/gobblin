@@ -37,7 +37,7 @@ import gobblin.source.extractor.watermark.Predicate;
 
 @Slf4j
 class ZuoraClientImpl implements ZuoraClient {
-  private static final Gson gson = new Gson();
+  private static final Gson GSON = new Gson();
   private final WorkUnitState _workUnitState;
   private final String _hostName;
   private final Retryer<CommandOutput<RestApiCommand, String>> _postRetryer;
@@ -89,7 +89,7 @@ class ZuoraClientImpl implements ZuoraClient {
         _workUnitState.getProp(ZuoraConfigurationKeys.ZUORA_API_NAME, "sample"),
         _workUnitState.getProp(ZuoraConfigurationKeys.ZUORA_OUTPUT_FORMAT, "csv"),
         _workUnitState.getProp(ConfigurationKeys.SOURCE_CONN_VERSION, "1.1"));
-    params.add(gson.toJson(filterPayload));
+    params.add(GSON.toJson(filterPayload));
     return Collections.singletonList(new RestApiCommand().build(params, RestApiCommand.RestApiCommandType.POST));
   }
 
@@ -118,7 +118,7 @@ class ZuoraClientImpl implements ZuoraClient {
 
     String stringResponse = itr.next();
     log.info("Zuora post response: " + stringResponse);
-    JsonObject jsonObject = gson.fromJson(stringResponse, JsonObject.class).getAsJsonObject();
+    JsonObject jsonObject = GSON.fromJson(stringResponse, JsonObject.class).getAsJsonObject();
     return jsonObject.get("id").getAsString();
   }
 
@@ -150,7 +150,7 @@ class ZuoraClientImpl implements ZuoraClient {
       throw new DataRecordException("Failed to get file Ids based on job id " + jobId);
     }
     String output = itr.next();
-    JsonObject jsonResp = gson.fromJson(output, JsonObject.class).getAsJsonObject();
+    JsonObject jsonResp = GSON.fromJson(output, JsonObject.class).getAsJsonObject();
     String status = jsonResp.get("status").getAsString();
     log.info(String.format("Job %s %s: %s", jobId, status, output));
     if (!status.equals("completed")) {
