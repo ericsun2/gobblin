@@ -50,15 +50,15 @@ class ZuoraClientImpl implements ZuoraClient {
         RetryerBuilder.<CommandOutput<RestApiCommand, String>>newBuilder().retryIfExceptionOfType(IOException.class)
             .withStopStrategy(StopStrategies
                 .stopAfterAttempt(workUnitState.getPropAsInt(ZuoraConfigurationKeys.ZUORA_API_RETRY_POST_COUNT, 20)))
-            .withWaitStrategy(WaitStrategies.fixedWait(
-                workUnitState.getPropAsInt(ZuoraConfigurationKeys.ZUORA_API_RETRY_POST_WAIT_TIME, 60000),
-                TimeUnit.MILLISECONDS)).build();
+            .withWaitStrategy(WaitStrategies
+                .fixedWait(workUnitState.getPropAsInt(ZuoraConfigurationKeys.ZUORA_API_RETRY_POST_WAIT_TIME, 60000),
+                    TimeUnit.MILLISECONDS)).build();
     _getRetryer = RetryerBuilder.<List<String>>newBuilder().retryIfExceptionOfType(IOException.class).withStopStrategy(
         StopStrategies
             .stopAfterAttempt(workUnitState.getPropAsInt(ZuoraConfigurationKeys.ZUORA_API_RETRY_GET_FILES_COUNT, 30)))
-        .withWaitStrategy(WaitStrategies.fixedWait(
-            workUnitState.getPropAsInt(ZuoraConfigurationKeys.ZUORA_API_RETRY_GET_FILES_WAIT_TIME, 30000),
-            TimeUnit.MILLISECONDS)).build();
+        .withWaitStrategy(WaitStrategies
+            .fixedWait(workUnitState.getPropAsInt(ZuoraConfigurationKeys.ZUORA_API_RETRY_GET_FILES_WAIT_TIME, 30000),
+                TimeUnit.MILLISECONDS)).build();
   }
 
   @Override
@@ -82,7 +82,8 @@ class ZuoraClientImpl implements ZuoraClient {
     }
 
     List<ZuoraQuery> queries = Lists.newArrayList();
-    queries.add(new ZuoraQuery(_workUnitState.getProp(ConfigurationKeys.JOB_NAME_KEY), query));
+    queries.add(new ZuoraQuery(_workUnitState.getProp(ConfigurationKeys.JOB_NAME_KEY), query,
+        _workUnitState.getProp(ZuoraConfigurationKeys.ZUORA_DELTED_COLUMN, "")));
     ZuoraParams filterPayload = new ZuoraParams(_workUnitState.getProp(ZuoraConfigurationKeys.ZUORA_PARTNER, "sample"),
         _workUnitState.getProp(ZuoraConfigurationKeys.ZUORA_PROJECT, "sample"), queries,
         _workUnitState.getProp(ZuoraConfigurationKeys.ZUORA_API_NAME, "sample"),
