@@ -42,20 +42,23 @@ public class ZuoraExtractor extends QueryBasedExtractor<JsonArray, JsonElement> 
   private static final String DATE_FORMAT = "yyyy-MM-dd";
   private static final String HOUR_FORMAT = "HH";
   private final ZuoraClient _client;
-  private final ZuoraClientFilesStreamer _fileStreamer;
+  private ZuoraClientFilesStreamer _fileStreamer;
   private List<String> _fileIds;
   private List<String> _header;
 
   public ZuoraExtractor(WorkUnitState workUnitState) {
     super(workUnitState);
     _client = new ZuoraClientImpl(workUnitState);
-    _fileStreamer = new ZuoraClientFilesStreamer(workUnitState, _client);
   }
 
   @Override
   public Iterator<JsonElement> getRecordSet(String schema, String entity, WorkUnit workUnit,
       List<Predicate> predicateList)
       throws DataRecordException, IOException {
+    if (_fileStreamer == null || _fileStreamer.isJobFailed()) {
+      _fileStreamer = new ZuoraClientFilesStreamer(workUnitState, _client);
+    }
+
     if (_fileIds == null) {
       List<Command> cmds = _client.buildPostCommand(predicateList);
       CommandOutput<RestApiCommand, String> postResponse = _client.executePostRequest(cmds.get(0));

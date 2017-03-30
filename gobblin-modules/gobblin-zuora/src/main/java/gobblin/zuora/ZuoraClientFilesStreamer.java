@@ -40,6 +40,7 @@ public class ZuoraClientFilesStreamer {
   private final Retryer<Void> _getRetryer;
 
   private boolean _jobFinished = false;
+  private boolean _jobFailed = false;
   private long _totalRecords = 0;
 
   private BufferedReader _currentReader;
@@ -100,6 +101,7 @@ public class ZuoraClientFilesStreamer {
       } catch (IOException e1) {
         log.error(e1.getMessage());
       }
+      _jobFailed = true;
       throw new DataRecordException("Failed to get records from Zuora: " + e.getMessage(), e);
     }
   }
@@ -155,5 +157,9 @@ public class ZuoraClientFilesStreamer {
 
   public boolean isJobFinished() {
     return _jobFinished;
+  }
+
+  public boolean isJobFailed() {
+    return _jobFailed;
   }
 }
