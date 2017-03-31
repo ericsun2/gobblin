@@ -225,7 +225,6 @@ public class Task implements Runnable {
     }
   }
 
-
   private ExecutionModel getTaskMode(TaskContext taskContext) {
     String mode = taskContext.getTaskState()
         .getProp(TaskConfigurationKeys.TASK_EXECUTION_MODE, TaskConfigurationKeys.DEFAULT_TASK_EXECUTION_MODE);
@@ -287,6 +286,7 @@ public class Task implements Runnable {
   @Override
   @SuppressWarnings("unchecked")
   public void run() {
+    recordsPulled.set(0L);
     this.startTime = System.currentTimeMillis();
     this.taskState.setStartTime(startTime);
     this.taskState.setWorkingState(WorkUnitState.WorkingState.RUNNING);

@@ -73,6 +73,11 @@ public class ZuoraExtractor extends QueryBasedExtractor<JsonArray, JsonElement> 
   }
 
   @Override
+  protected boolean isInitialPull(){
+    return _fileIds == null || _fileStreamer.isJobFailed();
+  }
+
+  @Override
   public void extractMetadata(String schema, String entity, WorkUnit workUnit)
       throws SchemaException, IOException {
     String deltaFields = workUnit.getProp(ConfigurationKeys.EXTRACT_DELTA_FIELDS_KEY);

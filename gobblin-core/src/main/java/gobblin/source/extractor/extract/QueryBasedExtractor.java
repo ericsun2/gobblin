@@ -101,7 +101,7 @@ public abstract class QueryBasedExtractor<S, D> implements Extractor<S, D>, Prot
     return getFetchStatus();
   }
 
-  private boolean isInitialPull() {
+  protected boolean isInitialPull() {
     return this.iterator == null;
   }
 
