@@ -19,10 +19,7 @@ package gobblin.restli.throttling;
 
 import avro.shaded.com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Lists;
-import com.google.inject.Binder;
-import com.google.inject.Guice;
 import com.google.inject.Injector;
-import com.google.inject.Module;
 import com.linkedin.r2.transport.common.Client;
 import com.linkedin.r2.transport.common.bridge.client.TransportClientAdapter;
 import com.linkedin.r2.transport.http.client.HttpClientFactory;
@@ -30,9 +27,6 @@ import com.linkedin.restli.client.RestClient;
 import com.linkedin.restli.server.resources.BaseResource;
 import com.typesafe.config.ConfigFactory;
 import gobblin.broker.BrokerConfigurationKeyGenerator;
-import gobblin.broker.SharedResourcesBrokerFactory;
-import gobblin.broker.SimpleScopeType;
-import gobblin.broker.iface.SharedResourcesBroker;
 import gobblin.restli.EmbeddedRestliServer;
 import gobblin.util.limiter.CountBasedLimiter;
 import gobblin.util.limiter.RestliServiceBasedLimiter;
@@ -48,22 +42,16 @@ public class RestliServiceBasedLimiterTest {
 
   @Test
   public void test() throws Exception {
-    SharedLimiterFactory factory = new SharedLimiterFactory();
+    ThrottlingPolicyFactory factory = new ThrottlingPolicyFactory();
     SharedLimiterKey res1key = new SharedLimiterKey("res1");
 
     Map<String, String> configMap = ImmutableMap.<String, String>builder()
-        .put(BrokerConfigurationKeyGenerator.generateKey(factory, res1key, null, SharedLimiterFactory.LIMITER_CLASS_KEY),
-            CountBasedLimiter.FACTORY_ALIAS)
-        .put(BrokerConfigurationKeyGenerator.generateKey(factory, res1key, null, CountBasedLimiter.Factory.COUNT_KEY), "50")
+        .put(BrokerConfigurationKeyGenerator.generateKey(factory, res1key, null, ThrottlingPolicyFactory.POLICY_KEY),
+            CountBasedPolicy.FACTORY_ALIAS)
+        .put(BrokerConfigurationKeyGenerator.generateKey(factory, res1key, null, CountBasedPolicy.COUNT_KEY), "100")
         .build();
-    final SharedResourcesBroker<SimpleScopeType> broker = SharedResourcesBrokerFactory.createDefaultTopLevelBroker(
-        ConfigFactory.parseMap(configMap), SimpleScopeType.GLOBAL.defaultScopeInstance());
-    Injector injector = Guice.createInjector(new Module() {
-      @Override
-      public void configure(Binder binder) {
-        binder.bind(SharedResourcesBroker.class).toInstance(broker);
-      }
-    });
+
+    Injector injector = ThrottlingGuiceServletConfig.getInjector(ConfigFactory.parseMap(configMap));
 
     EmbeddedRestliServer server = EmbeddedRestliServer.builder().resources(
         Lists.<Class<? extends BaseResource>>newArrayList(LimiterServerResource.class)).injector(injector).build();
@@ -78,12 +66,12 @@ public class RestliServiceBasedLimiterTest {
 
       RestClient restClient = new RestClient(r2Client, server.getURIPrefix());
 
-      RestliServiceBasedLimiter limiter =
-          new RestliServiceBasedLimiter(restClient, res1key.getResourceLimited(), "service");
+      RestliServiceBasedLimiter limiter = RestliServiceBasedLimiter.builder().restClient(restClient)
+          .resourceLimited(res1key.getResourceLimited()).serviceIdentifier("service").build();
 
       Assert.assertNotNull(limiter.acquirePermits(20));
       Assert.assertNotNull(limiter.acquirePermits(20));
-      Assert.assertNull(limiter.acquirePermits(20));
+      Assert.assertNull(limiter.acquirePermits(1000));
     } finally {
       if (server.isRunning()) {
         server.stopAsync();

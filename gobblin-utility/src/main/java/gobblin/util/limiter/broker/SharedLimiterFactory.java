@@ -58,6 +58,7 @@ public class SharedLimiterFactory<S extends ScopeType<S>> implements SharedResou
   public static final String NAME = "limiter";
   public static final String LIMITER_CLASS_KEY = "class";
   public static final String FAIL_IF_NO_GLOBAL_LIMITER_KEY = "failIfNoGlobalLimiter";
+  public static final String FAIL_ON_UNKNOWN_RESOURCE_ID = "faiOnUnknownResourceId";
 
   private static final ClassAliasResolver<LimiterFactory> RESOLVER = new ClassAliasResolver<>(LimiterFactory.class);
 
@@ -68,13 +69,14 @@ public class SharedLimiterFactory<S extends ScopeType<S>> implements SharedResou
 
   @Override
   public SharedResourceFactoryResponse<Limiter>
-    createResource(SharedResourcesBroker broker, ScopedConfigView<?, SharedLimiterKey> configView)
+    createResource(SharedResourcesBroker<S> broker, ScopedConfigView<S, SharedLimiterKey> configView)
       throws NotConfiguredException{
 
     Config config = configView.getConfig();
     SharedLimiterKey.GlobalLimiterPolicy globalLimiterPolicy = configView.getKey().getGlobalLimiterPolicy();
 
-    if (config.hasPath(FAIL_IF_NO_GLOBAL_LIMITER_KEY) && config.getBoolean(FAIL_IF_NO_GLOBAL_LIMITER_KEY)) {
+    if (config.hasPath(FAIL_IF_NO_GLOBAL_LIMITER_KEY) && config.getBoolean(FAIL_IF_NO_GLOBAL_LIMITER_KEY) &&
+        globalLimiterPolicy != SharedLimiterKey.GlobalLimiterPolicy.USE_GLOBAL) {
       // if user has specified FAIL_IF_NO_GLOBAL_LIMITER_KEY, promote the policy from USE_GLOBAL_IF_CONFIGURED to USE_GLOBAL
       // e.g. fail if no GLOBAL configuration is present
       SharedLimiterKey modifiedKey = new SharedLimiterKey(configView.getKey().getResourceLimited(),
@@ -104,16 +106,19 @@ public class SharedLimiterFactory<S extends ScopeType<S>> implements SharedResou
         throw new RuntimeException(roe);
       }
     } else {
+      if (config.hasPath(FAIL_ON_UNKNOWN_RESOURCE_ID) && config.getBoolean(FAIL_ON_UNKNOWN_RESOURCE_ID)) {
+        throw new NotConfiguredException();
+      }
       limiter = new NoopLimiter();
     }
 
-    ScopeType<?> scope = configView.getScope();
-    Collection<ScopeType<?>> parentScopes = (Collection<ScopeType<?>>) scope.parentScopes();
+    ScopeType<S> scope = configView.getScope();
+    Collection<S> parentScopes = scope.parentScopes();
     if (parentScopes != null) {
       try {
-        for (ScopeType<?> parentScope : parentScopes) {
+        for (S parentScope : parentScopes) {
           limiter = new MultiLimiter(limiter,
-              (Limiter) broker.<Limiter, SharedLimiterKey>getSharedResourceAtScope(this, configView.getKey(), parentScope));
+              broker.getSharedResourceAtScope(this, configView.getKey(), parentScope));
         }
       } catch (NoSuchScopeException nsse) {
         throw new RuntimeException("Could not get higher scope limiter. This is an error in code.", nsse);

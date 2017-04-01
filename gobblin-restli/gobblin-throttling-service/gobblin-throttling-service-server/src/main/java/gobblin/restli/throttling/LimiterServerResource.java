@@ -18,31 +18,62 @@
 package gobblin.restli.throttling;
 
 import java.io.Closeable;
+import java.io.IOException;
 
-import com.google.inject.Inject;
+import com.codahale.metrics.Meter;
+import com.codahale.metrics.Timer;
+import com.google.common.collect.ImmutableMap;
+import com.linkedin.data.template.GetMode;
 import com.linkedin.restli.common.ComplexResourceKey;
 import com.linkedin.restli.common.EmptyRecord;
+import com.linkedin.restli.common.HttpStatus;
+import com.linkedin.restli.server.RestLiServiceException;
 import com.linkedin.restli.server.annotations.RestLiCollection;
 import com.linkedin.restli.server.resources.ComplexKeyResourceTemplate;
 
+import gobblin.annotation.Alpha;
 import gobblin.broker.iface.NotConfiguredException;
 import gobblin.broker.iface.SharedResourcesBroker;
+import gobblin.metrics.MetricContext;
+import gobblin.metrics.broker.MetricContextFactory;
+import gobblin.metrics.broker.SubTaggedMetricContextKey;
+import gobblin.util.NoopCloseable;
 import gobblin.util.limiter.Limiter;
-import gobblin.util.limiter.broker.SharedLimiterFactory;
 import gobblin.util.limiter.broker.SharedLimiterKey;
 
+import javax.inject.Inject;
+import javax.inject.Named;
 import lombok.extern.slf4j.Slf4j;
 
 /**
  * Restli resource for allocating permits through Rest calls. Simply calls a {@link Limiter} in the server configured
  * through {@link SharedResourcesBroker}.
  */
+@Alpha
 @Slf4j
 @RestLiCollection(name = "permits", namespace = "gobblin.restli.throttling")
 public class LimiterServerResource extends ComplexKeyResourceTemplate<PermitRequest, EmptyRecord, PermitAllocation> {
 
-  @Inject
+  public static final long TIMEOUT_MILLIS = 7000; // resli client times out after 10 seconds
+
+  public static final String BROKER_INJECT_NAME = "broker";
+  public static final String METRIC_CONTEXT_INJECT_NAME = "limiterResourceMetricContext";
+  public static final String REQUEST_TIMER_INJECT_NAME = "limiterResourceRequestTimer";
+
+  public static final String REQUEST_TIMER_NAME = "limiterServer.requestTimer";
+  public static final String PERMITS_REQUESTED_METER_NAME = "limiterServer.permitsRequested";
+  public static final String PERMITS_GRANTED_METER_NAME = "limiterServer.permitsGranted";
+  public static final String LIMITER_TIMER_NAME = "limiterServer.limiterTimer";
+  public static final String RESOURCE_ID_TAG = "resourceId";
+
+  @Inject @Named(BROKER_INJECT_NAME)
   SharedResourcesBroker broker;
+
+  @Inject @Named(METRIC_CONTEXT_INJECT_NAME)
+  MetricContext metricContext;
+
+  @Inject @Named(REQUEST_TIMER_INJECT_NAME)
+  Timer requestTimer;
 
   /**
    * Request permits from the limiter server. The returned {@link PermitAllocation} specifies the number of permits
@@ -50,23 +81,36 @@ public class LimiterServerResource extends ComplexKeyResourceTemplate<PermitRequ
    */
   @Override
   public PermitAllocation get(ComplexResourceKey<PermitRequest, EmptyRecord> key) {
-    try {
+    try (Closeable context = this.requestTimer == null ? NoopCloseable.INSTANCE : this.requestTimer.time()) {
 
-      log.debug("Allocating request {}", key.getKey());
+      log.debug("Allocating request {}", key);
+
       PermitRequest request = key.getKey();
+      String resourceId = request.getResource();
 
-      Limiter limiter =
-          (Limiter) this.broker.<Limiter, SharedLimiterKey>getSharedResource(new SharedLimiterFactory(),
-              new SharedLimiterKey(request.getResource(), SharedLimiterKey.GlobalLimiterPolicy.LOCAL_ONLY));
+      MetricContext resourceContext = (MetricContext) broker.getSharedResource(new MetricContextFactory(),
+          new SubTaggedMetricContextKey(resourceId, ImmutableMap.of(RESOURCE_ID_TAG, resourceId)));
+      Meter permitsRequestedMeter = resourceContext.meter(PERMITS_REQUESTED_METER_NAME);
+      Meter permitsGrantedMeter = resourceContext.meter(PERMITS_GRANTED_METER_NAME);
+      Timer limiterTimer = resourceContext.timer(LIMITER_TIMER_NAME);
 
-      Closeable permit = limiter.acquirePermits(request.getPermits());
+      permitsRequestedMeter.mark(request.getPermits());
 
-      PermitAllocation allocation = new PermitAllocation();
-      allocation.setPermits(permit == null ? 0 : key.getKey().getPermits());
-      allocation.setExpiration(Long.MAX_VALUE);
+      ThrottlingPolicy policy = (ThrottlingPolicy) this.broker.getSharedResource(new ThrottlingPolicyFactory(),
+          new SharedLimiterKey(request.getResource()));
+
+      PermitAllocation allocation;
+      try (Closeable thisContext = limiterTimer.time()) {
+        allocation = policy.computePermitAllocation(request);
+      }
+
+      permitsGrantedMeter.mark(allocation.getPermits());
       return allocation;
-    } catch (NotConfiguredException | InterruptedException nce) {
-      throw new RuntimeException(nce);
+    } catch (NotConfiguredException nce) {
+      throw new RestLiServiceException(HttpStatus.S_422_UNPROCESSABLE_ENTITY, "No configuration for the requested resource.");
+    } catch (IOException ioe) {
+      // Failed to close timer context. This should never happen
+      throw new RuntimeException(ioe);
     }
   }
 }

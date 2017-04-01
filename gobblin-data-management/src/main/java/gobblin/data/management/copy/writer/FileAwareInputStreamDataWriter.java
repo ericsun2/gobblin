@@ -18,6 +18,7 @@
 package gobblin.data.management.copy.writer;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.URI;
 import java.util.Collections;
@@ -40,6 +41,9 @@ import com.google.common.base.Strings;
 import com.google.common.collect.Iterators;
 import com.google.common.io.Closer;
 
+import lombok.extern.slf4j.Slf4j;
+
+import gobblin.broker.EmptyKey;
 import gobblin.broker.gobblin_scopes.GobblinScopeTypes;
 import gobblin.broker.iface.NotConfiguredException;
 import gobblin.broker.iface.SharedResourcesBroker;
@@ -66,12 +70,9 @@ import gobblin.util.ForkOperatorUtils;
 import gobblin.util.PathUtils;
 import gobblin.util.WriterUtils;
 import gobblin.util.io.StreamCopier;
-import gobblin.util.io.StreamCopierSharedLimiterKey;
-import gobblin.util.limiter.Limiter;
-import gobblin.util.limiter.broker.SharedLimiterFactory;
+import gobblin.util.io.StreamThrottler;
+import gobblin.util.io.ThrottledInputStream;
 import gobblin.writer.DataWriter;
-
-import lombok.extern.slf4j.Slf4j;
 
 
 /**
@@ -139,7 +140,8 @@ public class FileAwareInputStreamDataWriter extends InstrumentedDataWriter<FileA
     this.copySpeedMeter = getMetricContext().meter(GOBBLIN_COPY_BYTES_COPIED_METER);
 
     this.bufferSize = state.getPropAsInt(CopyConfiguration.BUFFER_SIZE, StreamCopier.DEFAULT_BUFFER_SIZE);
-    this.encryptionConfig = EncryptionConfigParser.getConfigForBranch(this.state, numBranches, branchId);
+    this.encryptionConfig = EncryptionConfigParser
+        .getConfigForBranch(EncryptionConfigParser.EntityType.WRITER, this.state, numBranches, branchId);
   }
 
   public FileAwareInputStreamDataWriter(State state, int numBranches, int branchId)
@@ -180,7 +182,7 @@ public class FileAwareInputStreamDataWriter extends InstrumentedDataWriter<FileA
    * @param copyableFile {@link gobblin.data.management.copy.CopyEntity} that generated this copy operation.
    * @throws IOException
    */
-  protected void writeImpl(FSDataInputStream inputStream, Path writeAt, CopyableFile copyableFile)
+  protected void writeImpl(InputStream inputStream, Path writeAt, CopyableFile copyableFile)
       throws IOException {
 
     final short replication =
@@ -207,21 +209,15 @@ public class FileAwareInputStreamDataWriter extends InstrumentedDataWriter<FileA
       OutputStream os =
           this.fs.create(writeAt, true, this.fs.getConf().getInt("io.file.buffer.size", 4096), replication, blockSize);
       if (encryptionConfig != null) {
-        os = EncryptionFactory.buildStreamEncryptor(encryptionConfig).encodeOutputStream(os);
+        os = EncryptionFactory.buildStreamCryptoProvider(encryptionConfig).encodeOutputStream(os);
       }
       try {
 
-        StreamCopier copier = new StreamCopier(inputStream, os).withBufferSize(this.bufferSize);
-
-        StreamCopierSharedLimiterKey key =
-            new StreamCopierSharedLimiterKey(copyableFile.getOrigin().getPath().toUri(), this.fs.makeQualified(writeAt).toUri());
-        log.info("Acquiring a limiter for stream copier with key " + key.toConfigurationKey());
-        try {
-          Limiter limiter = this.taskBroker.getSharedResource(new SharedLimiterFactory<GobblinScopeTypes>(), key);
-          copier.withBytesTransferedLimiter(limiter);
-        } catch (NotConfiguredException nce) {
-          log.warn("A limiter for %s is not configured. Will not use limiter for %s.", key, StreamCopier.class);
-        }
+        StreamThrottler<GobblinScopeTypes> throttler =
+            this.taskBroker.getSharedResource(new StreamThrottler.Factory<GobblinScopeTypes>(), new EmptyKey());
+        ThrottledInputStream throttledInputStream = throttler.throttleInputStream().inputStream(inputStream)
+            .sourceURI(copyableFile.getOrigin().getPath().toUri()).targetURI(this.fs.makeQualified(writeAt).toUri()).build();
+        StreamCopier copier = new StreamCopier(throttledInputStream, os).withBufferSize(this.bufferSize);
 
         if (isInstrumentationEnabled()) {
           copier.withCopySpeedMeter(this.copySpeedMeter);
@@ -233,6 +229,8 @@ public class FileAwareInputStreamDataWriter extends InstrumentedDataWriter<FileA
         } else {
           log.info("File {} copied.", copyableFile.getOrigin().getPath());
         }
+      } catch (NotConfiguredException nce) {
+        log.warn("Broker error. Some features of stream copier may not be available.", nce);
       } finally {
         os.close();
         inputStream.close();

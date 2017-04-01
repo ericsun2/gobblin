@@ -24,7 +24,9 @@ import lombok.extern.slf4j.Slf4j;
 
 import gobblin.configuration.ConfigurationKeys;
 import gobblin.configuration.State;
+import gobblin.configuration.WorkUnitState;
 import gobblin.password.PasswordManager;
+import gobblin.util.ForkOperatorUtils;
 
 
 /**
@@ -38,17 +40,66 @@ public class EncryptionConfigParser {
    *  keystore_path: Location for the java keystore where encryption keys can be found
    *  keystore_password: Password the keystore is encrypted with
    */
-  public static final String ENCRYPT_PREFIX = ConfigurationKeys.WRITER_PREFIX + ".encrypt";
+  static final String WRITER_ENCRYPT_PREFIX = ConfigurationKeys.WRITER_PREFIX + ".encrypt";
+  static final String CONVERTER_ENCRYPT_PREFIX = "converter.encrypt";
 
   public static final String ENCRYPTION_ALGORITHM_KEY = "algorithm";
   public static final String ENCRYPTION_KEYSTORE_PATH_KEY = "keystore_path";
   public static final String ENCRYPTION_KEYSTORE_PASSWORD_KEY = "keystore_password";
 
+  public static final String ENCRYPTION_KEYSTORE_TYPE_KEY = "keystore_type";
+  public static final String ENCRYPTION_KEYSTORE_TYPE_KEY_DEFAULT = "java";
+
   public static final String ENCRYPTION_TYPE_ANY = "any";
 
-  public static Map<String, Object> getConfigForBranch(State taskState, int numBranches, int branch) {
-    Map<String, Object> properties = extractPropertiesForBranch(taskState.getProperties(), ENCRYPT_PREFIX,
-        numBranches, branch);
+  /**
+   * Represents the entity we are trying to retrieve configuration for. Internally this
+   * enum maps entity type to a configuration prefix.
+   */
+  public enum EntityType {
+    CONVERTER(CONVERTER_ENCRYPT_PREFIX),
+    WRITER(WRITER_ENCRYPT_PREFIX);
+
+    private final String configPrefix;
+
+    private EntityType(String configPrefix) {
+      this.configPrefix = configPrefix;
+    }
+
+    public String getConfigPrefix() {
+      return configPrefix;
+    }
+  }
+
+  /**
+   * Retrieve encryption configuration for the branch the WorKUnitState represents
+   * @param entityType Type of entity we are retrieving config for
+   * @param workUnitState State for the object querying config
+   * @return A list of encryption properties or null if encryption isn't configured
+   */
+  public static Map<String, Object> getConfigForBranch(EntityType entityType, WorkUnitState workUnitState) {
+    return getConfigForBranch(workUnitState.getJobState(),
+        entityType.getConfigPrefix(),
+        ForkOperatorUtils.getPropertyNameForBranch(workUnitState, ""));
+  }
+
+  /**
+   * Retrieve encryption config for a given branch of a task
+   * @param entityType Entity type we are retrieving config for
+   * @param taskState State of the task
+   * @param numBranches Number of branches overall
+   * @param branch Branch # of the current object
+   * @return A list of encryption properties or null if encryption isn't configured
+   */
+  public static Map<String, Object> getConfigForBranch(EntityType entityType, State taskState, int numBranches, int branch) {
+    return getConfigForBranch(taskState,
+        entityType.getConfigPrefix(),
+        ForkOperatorUtils.getPropertyNameForBranch("", numBranches, branch));
+  }
+
+  private static Map<String, Object> getConfigForBranch(State taskState, String prefix, String branchSuffix) {
+    Map<String, Object> properties =
+        extractPropertiesForBranch(taskState.getProperties(), prefix, branchSuffix);
     if (properties.isEmpty()) {
       return null;
     }
@@ -80,6 +131,18 @@ public class EncryptionConfigParser {
   }
 
   /**
+   * Get the type of keystore to instantiate
+   */
+  public static String getKeystoreType(Map<String, Object> parameters) {
+    String type = (String)parameters.get(ENCRYPTION_KEYSTORE_TYPE_KEY);
+    if (type == null) {
+      type = ENCRYPTION_KEYSTORE_TYPE_KEY_DEFAULT;
+    }
+
+    return type;
+  }
+
+  /**
    * Extract a set of properties for a given branch, stripping out the prefix and branch
    * suffix.
    *
@@ -94,15 +157,13 @@ public class EncryptionConfigParser {
    * this is very similar to ConfigUtils and typesafe config; need to figure out config story
    * @param properties Properties to extract data from
    * @param prefix Prefix to match; all other properties will be ignored
-   * @param numBranches # of branches
-   * @param branch Branch # to extract
+   * @param branchSuffix Suffix for all config properties
    * @return Transformed properties as described above
    */
   private static Map<String, Object> extractPropertiesForBranch(
-      Properties properties, String prefix, int numBranches, int branch) {
+      Properties properties, String prefix, String branchSuffix) {
 
     Map<String, Object> ret = new HashMap<>();
-    String branchSuffix = (numBranches > 1) ? String.format(".%d", branch) : "";
 
     for (Map.Entry<Object, Object> prop: properties.entrySet()) {
       String key = (String)prop.getKey();

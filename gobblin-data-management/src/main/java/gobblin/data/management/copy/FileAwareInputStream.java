@@ -17,14 +17,13 @@
 
 package gobblin.data.management.copy;
 
+import java.io.InputStream;
+
 import lombok.AllArgsConstructor;
 import lombok.Getter;
 
-import org.apache.hadoop.fs.FSDataInputStream;
-
-
 /**
- * A wrapper to {@link FSDataInputStream} that represents an entity to be copied. The enclosed {@link CopyableFile} instance
+ * A wrapper to {@link InputStream} that represents an entity to be copied. The enclosed {@link CopyableFile} instance
  * contains file Metadata like permission, destination path etc. required by the writers and converters.
  */
 @AllArgsConstructor
@@ -32,7 +31,7 @@ import org.apache.hadoop.fs.FSDataInputStream;
 public class FileAwareInputStream {
 
   private CopyableFile file;
-  private FSDataInputStream inputStream;
+  private InputStream inputStream;
 
   @Override
   public String toString() {

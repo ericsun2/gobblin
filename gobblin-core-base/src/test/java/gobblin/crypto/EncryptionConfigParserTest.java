@@ -24,6 +24,7 @@ import org.testng.annotations.BeforeTest;
 import org.testng.annotations.Test;
 
 import gobblin.configuration.State;
+import gobblin.configuration.WorkUnitState;
 
 
 public class EncryptionConfigParserTest {
@@ -47,34 +48,58 @@ public class EncryptionConfigParserTest {
   @Test
   public void testAlgorithmNotPresent() {
     Properties properties = new Properties();
-    properties.put(EncryptionConfigParser.ENCRYPT_PREFIX + "." + EncryptionConfigParser.ENCRYPTION_KEYSTORE_PATH_KEY,
-        "/tmp/foobar");
-    properties.put(EncryptionConfigParser.ENCRYPT_PREFIX + "." + EncryptionConfigParser.ENCRYPTION_KEYSTORE_PASSWORD_KEY,
+    properties
+        .put(EncryptionConfigParser.WRITER_ENCRYPT_PREFIX + "." + EncryptionConfigParser.ENCRYPTION_KEYSTORE_PATH_KEY,
+            "/tmp/foobar");
+    properties.put(
+        EncryptionConfigParser.WRITER_ENCRYPT_PREFIX + "." + EncryptionConfigParser.ENCRYPTION_KEYSTORE_PASSWORD_KEY,
         "abracadabra");
 
     State s = new State(properties);
 
-    Map<String, Object> parsedProperties = EncryptionConfigParser.getConfigForBranch(s, 1, 0);
+    Map<String, Object> parsedProperties = EncryptionConfigParser.getConfigForBranch(EncryptionConfigParser.EntityType.WRITER, s, 1, 0);
     Assert.assertNull(parsedProperties, "Expected encryption be empty if no algorithm specified");
   }
 
   @Test
   public void testProperPrefix() {
     Properties properties = new Properties();
-    properties.put(
-        EncryptionConfigParser.ENCRYPT_PREFIX + "." + EncryptionConfigParser.ENCRYPTION_ALGORITHM_KEY,
+    properties.put(EncryptionConfigParser.WRITER_ENCRYPT_PREFIX + "." + EncryptionConfigParser.ENCRYPTION_ALGORITHM_KEY,
         "any");
-    properties.put(EncryptionConfigParser.ENCRYPT_PREFIX + "." + EncryptionConfigParser.ENCRYPTION_KEYSTORE_PATH_KEY,
-        "/tmp/foobar");
-    properties.put(EncryptionConfigParser.ENCRYPT_PREFIX + "." + EncryptionConfigParser.ENCRYPTION_KEYSTORE_PASSWORD_KEY,
+    properties
+        .put(EncryptionConfigParser.WRITER_ENCRYPT_PREFIX + "." + EncryptionConfigParser.ENCRYPTION_KEYSTORE_PATH_KEY,
+            "/tmp/foobar");
+    properties.put(
+        EncryptionConfigParser.WRITER_ENCRYPT_PREFIX + "." + EncryptionConfigParser.ENCRYPTION_KEYSTORE_PASSWORD_KEY,
         "abracadabra");
-    properties.put(EncryptionConfigParser.ENCRYPT_PREFIX + "abc.def", "foobar");
+    properties.put(EncryptionConfigParser.WRITER_ENCRYPT_PREFIX + "abc.def", "foobar");
 
     State s = new State(properties);
 
-    Map<String, Object> parsedProperties = EncryptionConfigParser.getConfigForBranch(s, 1, 0);
+    Map<String, Object> parsedProperties = EncryptionConfigParser.getConfigForBranch(EncryptionConfigParser.EntityType.WRITER, s, 1, 0);
     Assert.assertNotNull(parsedProperties, "Expected parser to only return one record");
     Assert.assertEquals(parsedProperties.size(), 3, "Did not expect abc.def to be picked up in config");
+  }
+
+  @Test
+  public void testConverter() {
+    WorkUnitState wuState = new WorkUnitState();
+    wuState.getJobState().setProp(
+        EncryptionConfigParser.CONVERTER_ENCRYPT_PREFIX + "." + EncryptionConfigParser.ENCRYPTION_ALGORITHM_KEY, "any");
+    wuState.getJobState().setProp(
+        EncryptionConfigParser.CONVERTER_ENCRYPT_PREFIX + "." + EncryptionConfigParser.ENCRYPTION_KEYSTORE_PATH_KEY,
+        "/tmp/foobar");
+    wuState.getJobState().setProp(
+        EncryptionConfigParser.CONVERTER_ENCRYPT_PREFIX + "." + EncryptionConfigParser.ENCRYPTION_KEYSTORE_PASSWORD_KEY,
+        "abracadabra");
+    wuState.setProp(EncryptionConfigParser.CONVERTER_ENCRYPT_PREFIX + "abc.def", "foobar");
+
+    Map<String, Object> parsedProperties = EncryptionConfigParser.getConfigForBranch(EncryptionConfigParser.EntityType.CONVERTER, wuState);
+    Assert.assertNotNull(parsedProperties, "Expected parser to only return one record");
+    Assert.assertEquals(parsedProperties.size(), 3, "Did not expect abc.def to be picked up in config");
+
+    Map<String, Object> parsedWriterProperties = EncryptionConfigParser.getConfigForBranch(EncryptionConfigParser.EntityType.WRITER, wuState);
+    Assert.assertNull(parsedWriterProperties, "Did not expect to find writer properties");
   }
 
   private void testWithWriterPrefix(int numBranches, int branch) {
@@ -84,17 +109,18 @@ public class EncryptionConfigParserTest {
     }
 
     Properties properties = new Properties();
+    properties.put(EncryptionConfigParser.WRITER_ENCRYPT_PREFIX + "." + EncryptionConfigParser.ENCRYPTION_ALGORITHM_KEY
+        + branchString, "any");
     properties.put(
-        EncryptionConfigParser.ENCRYPT_PREFIX + "." + EncryptionConfigParser.ENCRYPTION_ALGORITHM_KEY + branchString,
-        "any");
-    properties.put(EncryptionConfigParser.ENCRYPT_PREFIX + "." + EncryptionConfigParser.ENCRYPTION_KEYSTORE_PATH_KEY
-        + branchString, "/tmp/foobar");
-    properties.put(EncryptionConfigParser.ENCRYPT_PREFIX + "." + EncryptionConfigParser.ENCRYPTION_KEYSTORE_PASSWORD_KEY
-        + branchString, "abracadabra");
+        EncryptionConfigParser.WRITER_ENCRYPT_PREFIX + "." + EncryptionConfigParser.ENCRYPTION_KEYSTORE_PATH_KEY
+            + branchString, "/tmp/foobar");
+    properties.put(
+        EncryptionConfigParser.WRITER_ENCRYPT_PREFIX + "." + EncryptionConfigParser.ENCRYPTION_KEYSTORE_PASSWORD_KEY
+            + branchString, "abracadabra");
 
     State s = new State(properties);
 
-    Map<String, Object> parsedProperties = EncryptionConfigParser.getConfigForBranch(s, numBranches, branch);
+    Map<String, Object> parsedProperties = EncryptionConfigParser.getConfigForBranch(EncryptionConfigParser.EntityType.WRITER, s, numBranches, branch);
     Assert.assertNotNull(parsedProperties, "Expected parser to only return one record");
 
     Assert.assertEquals(EncryptionConfigParser.getEncryptionType(parsedProperties), "any");

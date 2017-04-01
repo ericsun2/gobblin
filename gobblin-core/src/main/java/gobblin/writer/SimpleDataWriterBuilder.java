@@ -18,6 +18,17 @@
 package gobblin.writer;
 
 import java.io.IOException;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+
+import com.google.common.base.Preconditions;
+
+import gobblin.codec.StreamCodec;
+import gobblin.compression.CompressionConfigParser;
+import gobblin.compression.CompressionFactory;
+import gobblin.crypto.EncryptionConfigParser;
+import gobblin.crypto.EncryptionFactory;
 
 
 /**
@@ -25,7 +36,7 @@ import java.io.IOException;
  *
  * @author akshay@nerdwallet.com
  */
-public class SimpleDataWriterBuilder extends FsDataWriterBuilder<String, byte[]> {
+public class SimpleDataWriterBuilder extends FsDataWriterBuilder<String, Object> {
   /**
    * Build a {@link gobblin.writer.DataWriter}.
    *
@@ -33,8 +44,36 @@ public class SimpleDataWriterBuilder extends FsDataWriterBuilder<String, byte[]>
    * @throws java.io.IOException if there is anything wrong building the writer
    */
   @Override
-  public DataWriter<byte[]> build() throws IOException {
-    return new SimpleDataWriter(this, this.destination.getProperties());
+  public DataWriter<Object> build() throws IOException {
+    return new MetadataWriterWrapper<byte[]>(new SimpleDataWriter(this, this.destination.getProperties()),
+        byte[].class,
+        this.branches,
+        this.branch,
+        this.destination.getProperties());
   }
 
+  @Override
+  protected List<StreamCodec> buildEncoders() {
+    Preconditions.checkNotNull(this.destination, "Destination must be set before building encoders");
+
+    List<StreamCodec> encoders = new ArrayList<>();
+
+    // TODO: refactor this when capability support comes back in
+
+    // Compress first since compressing encrypted data will give no benefit
+    Map<String, Object> compressionConfig =
+        CompressionConfigParser.getConfigForBranch(this.destination.getProperties(), this.branches, this.branch);
+    if (compressionConfig != null) {
+      encoders.add(CompressionFactory.buildStreamCompressor(compressionConfig));
+    }
+
+    Map<String, Object> encryptionConfig = EncryptionConfigParser
+        .getConfigForBranch(EncryptionConfigParser.EntityType.WRITER, this.destination.getProperties(), this.branches,
+            this.branch);
+    if (encryptionConfig != null) {
+      encoders.add(EncryptionFactory.buildStreamCryptoProvider(encryptionConfig));
+    }
+
+    return encoders;
+  }
 }
