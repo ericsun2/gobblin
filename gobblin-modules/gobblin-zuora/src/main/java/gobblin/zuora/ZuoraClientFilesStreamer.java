@@ -51,12 +51,11 @@ public class ZuoraClientFilesStreamer {
   public ZuoraClientFilesStreamer(WorkUnitState workUnitState, ZuoraClient client) {
     _workUnitState = workUnitState;
     _client = client;
-    batchSize = workUnitState
-        .getPropAsInt(ConfigurationKeys.SOURCE_QUERYBASED_FETCH_SIZE, ConfigurationKeys.DEFAULT_SOURCE_FETCH_SIZE);
+    batchSize = workUnitState.getPropAsInt(ConfigurationKeys.SOURCE_QUERYBASED_FETCH_SIZE, 2000);
     outputFormat = _workUnitState.getProp(ZuoraConfigurationKeys.ZUORA_OUTPUT_FORMAT);
     _getRetryer = RetryerBuilder.<Void>newBuilder().retryIfExceptionOfType(IOException.class).withStopStrategy(
-        StopStrategies.stopAfterAttempt(
-            workUnitState.getPropAsInt(ZuoraConfigurationKeys.ZUORA_API_RETRY_STREAM_FILES_COUNT, 10)))
+        StopStrategies
+            .stopAfterAttempt(workUnitState.getPropAsInt(ZuoraConfigurationKeys.ZUORA_API_RETRY_STREAM_FILES_COUNT, 3)))
         .withWaitStrategy(WaitStrategies
             .fixedWait(workUnitState.getPropAsInt(ZuoraConfigurationKeys.ZUORA_API_RETRY_STREAM_FILES_WAIT_TIME, 10000),
                 TimeUnit.MILLISECONDS)).build();
